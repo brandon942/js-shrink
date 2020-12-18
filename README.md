@@ -4,7 +4,7 @@ Shortens string literals, property names, variable names, builtin values.
 Basically, it turns all frequently used strings into short variables and prepends the declaration statement.
 
 # Usage
-<pre>
+```javascript
 var shrink = require('js-shrink');
 
 var out_code = shrink(in_code, {
@@ -18,4 +18,4 @@ var out_code = shrink(in_code, {
 	quote: "`", // the quote character to use. Default ` because it is least likely to require escapes
 	debug: false, // prints some debug info
 })
-  </pre>
+```
