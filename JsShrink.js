@@ -431,13 +431,13 @@ function getAllScopeVariableNames(scope) {
 }
 function Shrink(src, options) {
 	const _TO_SHRINK_ALL = options && "all" in options? options.all : false
-	const _TO_SHRINK_ALL_STRING_LITERALS = _TO_SHRINK_ALL || options && "literals" in options? options.literals : TO_SHRINK_ALL_STRING_LITERALS
-	const _TO_SHRINK_ALL_PROPERTY_NAMES = _TO_SHRINK_ALL || options && "properties" in options? options.properties : TO_SHRINK_ALL_PROPERTY_NAMES
-	const _TO_SHRINK_ALL_UNDECLARED_GLOBALS = _TO_SHRINK_ALL || options && "undeclared" in options? options.undeclared : TO_SHRINK_ALL_UNDECLARED_GLOBALS
-	const _TO_SHRINK_ALL_VARIABLES = _TO_SHRINK_ALL || options && "variables" in options? options.variables : TO_SHRINK_ALL_VARIABLES_WHEN_POSSIBLE
-	const _TO_SHRINK_BUILTIN_VALUES = _TO_SHRINK_ALL || options && "values" in options? options.values : TO_SHRINK_BUILTIN_VALUES
+	const _TO_SHRINK_ALL_STRING_LITERALS = _TO_SHRINK_ALL || (options && "literals" in options? options.literals : TO_SHRINK_ALL_STRING_LITERALS)
+	const _TO_SHRINK_ALL_PROPERTY_NAMES = _TO_SHRINK_ALL || (options && "properties" in options? options.properties : TO_SHRINK_ALL_PROPERTY_NAMES)
+	const _TO_SHRINK_ALL_UNDECLARED_GLOBALS = _TO_SHRINK_ALL || (options && "undeclared" in options? options.undeclared : TO_SHRINK_ALL_UNDECLARED_GLOBALS)
+	const _TO_SHRINK_ALL_VARIABLES = _TO_SHRINK_ALL || (options && "variables" in options? options.variables : TO_SHRINK_ALL_VARIABLES_WHEN_POSSIBLE)
+	const _TO_SHRINK_BUILTIN_VALUES = _TO_SHRINK_ALL || (options && "values" in options? options.values : TO_SHRINK_BUILTIN_VALUES)
 	const _MIN_PROPERTY_NAME_LENGTH = options && "minPropertyNameLength" in options? options.minPropertyNameLength : MIN_PROPERTY_NAME_LENGTH
-	const _TO_REPLACE_ON_0_GAIN = options && "allow0Gain" in options? options.allow0Gain : TO_REPLACE_ON_0_GAIN
+	const _TO_REPLACE_ON_0_GAIN = options && "allowNoGain" in options? options.allowNoGain : TO_REPLACE_ON_0_GAIN
 	const _CONST_DECLARATION_QUOTE_CHARACTER = options && "quote" in options && typeof options.quote == "string"? options.quote : CONST_DECLARATION_QUOTE_CHARACTER
 	const _DEBUG = options && "debug" in options? options.debug : DEBUG
 	
@@ -450,7 +450,7 @@ function Shrink(src, options) {
 	scan.crawl(ast) 
 	
 	
-	var all_scopes = getAllScopes_andAddAdditionalInfo(ast, true, true, !_TO_SHRINK_ALL_VARIABLES)
+	var all_scopes = getAllScopes_andAddAdditionalInfo(ast, true, true)
 	
 	var all_undeclared_set =  new Set(
 		all_scopes.map(s => [...s.undeclaredBindings].map(x=>x[0])) // undeclared names
