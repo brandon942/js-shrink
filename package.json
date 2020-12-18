@@ -1,0 +1,14 @@
+{
+  "name": "js-shrink",
+  "version": "1.0.0",
+  "description": "Supplemental javascript minifier",
+  "main": "JsShrink.js",
+  "scripts": {
+  },
+  "author": "brandon942",
+  "license": "MIT",
+  "dependencies": {
+    "acorn": "^8.0.1",
+    "transform-ast": "^2.4.4"
+  }
+}
