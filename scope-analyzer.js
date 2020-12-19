@@ -224,14 +224,11 @@ function getBinding (identifier) {
 }
 
 function registerScopeBindings (node) {
-	// Before: Scopes were created when variable declarations are encountered. This reduces the amount of scope objects (lower memory) but will break the script logic.
-	// 		Problem: Parent scope assignments. Blocks that create subscopes above a "let" variable will jump over the let variable's scope when they assign a parent scope.
-	// 			So each block that can hold a local scope must create a local scope immediately so that the scope is visible to lower subscopes,
-	// 			in case "let" variables below the block assign themselves to that scope. Even it it is empty az first. Optimization runs can still remove empty scopes later on.
+	// Before: Scopes were created when variable declarations were encountered. This reduces the amount of scope objects (lower memory) but will break the script logic.
+	// 	Problem: Child scopes aren't always assigned the correct parent.
 	// EDIT: 
 	// - Scopes (+every block scope) are created immediately whenever possible at the start of the node visit
-	// - When a node visit is finished, it is checked it its scope is empty, if so then subscopes are re-pointed to the parent scope, and the empty scope is deleted
-	
+	// - When a node visit is finished, it is checked if the node's scope is empty. If so then all subscopes are re-pointed to the parent scope, and the empty scope is deleted
   if (node.type === 'Program') {
     createScope(node)
   }
@@ -267,7 +264,7 @@ function registerScopeBindings (node) {
     })
   }
   else if (isBlockScopeNode(node)) {
-	var scope = createScope(node)
+    var scope = createScope(node)
   }
   
 	if (node.type === 'FunctionExpression' || node.type === 'ClassExpression') {
@@ -304,7 +301,7 @@ function getParentScope (node) {
 
 // Get the scope that a declaration will be declared in
 function getNearestScope (node, blockScope) {
-	// INFO: The for-statement itself is a scope that is above it's body, which can be a BlockStatement (a sub scope) or an expression
+	// INFO: The for-statement itself is a scope
   var parent = node
   while (parent.parent) {
     parent = parent.parent
@@ -321,7 +318,6 @@ function getNearestScope (node, blockScope) {
   return parent
 }
 function isBlockScopeNode(node) {
-	
 	return node.type === 'BlockStatement' || node.type === 'ForStatement' || node.type === 'ForInStatement' || node.type === 'ForOfStatement'
 }
 
