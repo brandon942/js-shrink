@@ -12,6 +12,7 @@ var out_code = shrink(in_code, {
 	all: false, // shrink everything (enables all of the below options, in case they aren't enabled by default - they are)
 	literals: true, // shrink string literals
 	properties: true, // shrink all property names
+	variables: true, // shrink all variable names
 	undeclared: true, // shrink all undeclared globals
 	values: true, // shrink null, undefined, Infinity
 	allow0Gain: false, // to replace even if the character difference is 0
