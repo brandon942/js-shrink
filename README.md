@@ -27,7 +27,7 @@ var out_code = shrink(in_code, {
    
 
 # Class property inlining
-If the option `classObject` is true then class methods & properties will be inlined if they're used only once or removed if they're not used anywhere. The comment `/* CLASS_OBJECT */` needs to be placed in front of the objects. This can only work safely for unique property names so names that are not unique must be excluded from inlining.
+If the option `classObject` is true then class methods & properties will be inlined if they're used only once or removed if they're not used anywhere. The comment `/* CLASS_OBJECT */` needs to be placed in front of the objects. This can only work safely for unique property names so names that are not unique are excluded from inlining.
 ```javascript
 
 var myClass = /* CLASS_OBJECT */ {
