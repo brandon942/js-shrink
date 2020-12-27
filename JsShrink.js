@@ -203,7 +203,7 @@ function obtainNewVariableIdentifiers(node, otherIdentifiersInThisScope, customG
 						nodes = nodes.references || nodes // Binding or Set
 						for (const n of nodes) {
 							if(t[5]) n[t[5]] = aname
-							if(n.type != "Identifier" && n.type != "Literal" && n.type != "TemplateLiteral") {
+							if(n.type != "Identifier" && n.type != "Literal" && n.type != "TemplateLiteral" && !(n.type === "UnaryExpression" && n.operator === "void")) {
 								throw "node must be a Identifier|Literal|TemplateLiteral"
 							}	
 						}
