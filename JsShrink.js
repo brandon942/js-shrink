@@ -1155,10 +1155,7 @@ function inlineClassObjectProperties(src, options) {
 				for (const [n, propNode] of allProps) {
 					propNode._refs = new Set
 				}
-				var seen = new Set
 				walk(ast, node=>{
-					if(seen.has(node)) debugger;
-					else seen.add(node)
 					var name = null
 					var isIdentifier = node.type == "Identifier"
 					var isLiteral = node.type == "Literal"
