@@ -36,7 +36,7 @@ var myClass = /* CLASS_OBJECT */ {
 	method1(){ // will be removed
 		return 1
 	},
-	method2(){ // will be inlined in hi
+	method2(){ // will be inlined in init
 		return this.prop1
 	},
 	init(){
