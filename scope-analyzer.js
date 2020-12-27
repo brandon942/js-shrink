@@ -2,6 +2,8 @@
 var assert = require('assert')
 
 var kScope = Symbol('scope')
+var kBinding = Symbol('bind')
+var kIsDefinition = Symbol('def')
 
 exports.createScope = createScope
 exports.visitScope = visitScope
@@ -13,8 +15,17 @@ exports.deleteScope = deleteScope
 exports.nearestScope = getNearestScope
 exports.scope = getScope
 exports.getBinding = getBinding
+exports.binding = getDeclaredBinding
+exports.isDefinition = isNodeDefinition
 exports.isBlockScopeNode = isBlockScopeNode
 
+
+function getDeclaredBinding(node) {
+	return node[kBinding]
+}
+function isNodeDefinition(node) {
+	return node[kIsDefinition]
+}
 
 
 function Binding (name, definition) {
@@ -22,11 +33,15 @@ function Binding (name, definition) {
 	this.definition = definition
 	this.references = new Set()
   
-	if (definition) this.add(definition)
+	if (definition){
+		this.add(definition)
+		definition[kIsDefinition] = true
+	}
   }
   
   Binding.prototype.add = function (node) {
 	this.references.add(node)
+	node[kBinding] = this
 	return this
   }
   
@@ -77,7 +92,8 @@ Scope.prototype.define = function (binding) {
       existing.add(ref)
     })
   } else {
-    this.bindings.set(binding.name, binding)
+	this.bindings.set(binding.name, binding)
+	binding.scope = this
   }
   return this
 }
@@ -92,6 +108,12 @@ Scope.prototype.add = function (name, ref) {
     binding.add(ref)
   }
   return this
+}
+Scope.prototype.depth = function (functions) {
+	var scope = this
+	var depth = 1
+	while (scope = scope.parent) (!functions || functions && !this.isBlock) && ++depth
+	return depth
 }
 
 Scope.prototype.addUndeclared = function (name, ref) {
@@ -136,8 +158,11 @@ Scope.prototype.forEachAvailable = function (cb) {
 function createScope (node, bindings) {
   assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: createScope: node must be an ast node')
   if (!node[kScope]) {
-    var parent = getParentScope(node)
-    node[kScope] = new Scope(parent)
+	var parent = getParentScope(node)
+	let scope = new Scope(parent)
+	node[kScope] = scope
+	scope.n = node
+	if(isBlockScopeNode(node)) scope.isBlock = true
   }
   if (bindings) {
     for (var i = 0; i < bindings.length; i++) {
@@ -330,7 +355,7 @@ function getDeclaredScope (id) {
   // they will conflict.
   // Here we jump out of the FunctionDeclaration so we can start by looking at the
   // surrounding scope
-  if (id.parent.type === 'FunctionDeclaration' && id.parent.id === id) {
+  if ((id.parent.type === 'FunctionDeclaration'|| id.parent.type === 'FunctionExpression') && id.parent.id === id) {
     parent = id.parent
   }
   while (parent.parent) {
@@ -349,7 +374,7 @@ function registerReference (node) {
     scope.add(node.name, node)
   }
   if (scope && !scope.has(node.name)) {
-    scope.addUndeclared(node.name, node)
+    scope.addUndeclared(node.name, node) 
   }
 }
 
@@ -370,12 +395,58 @@ function isImportName (node) {
 function isVariable (node) {
   return node.type === 'Identifier' &&
   	node.name !== "Infinity" && node.name !== "undefined" && node.name !== "NaN" && 
-    !isObjectKey(node) &&
+	!isObjectKey(node) &&
 	!isMethodDefinition(node) &&
+	!isFunctionArgumentsKeyword(node) &&
 	node.parent.type !== 'LabeledStatement' &&
     (node.parent.type !== 'MemberExpression' || node.parent.object === node ||
       (node.parent.property === node && node.parent.computed)) &&
     !isImportName(node)
+}
+
+function isFunctionArgumentsKeyword (node) {
+	// only FunctionDeclaration & FunctionExpression have the special "arguments" keyword
+	// but only if "arguments" is not declared as a local variable
+	if (node.name == "arguments") {
+		var functionNode = getEnclosingNormalFunctionNode(node)
+		if (functionNode) {
+			var declaredScopeInFunction = isVariableDeclaredInFunction(node)
+			if(!declaredScopeInFunction){
+				functionNode.uses_arguments = true
+				return true
+			}
+		}
+	}
+}
+function getEnclosingNormalFunctionNode (node) {
+	var n = node
+	while (n = n.parent) {
+		if(n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression'){
+			return n
+		}
+		if(n.type === 'ArrowFunctionExpression'){
+			return false
+		}
+	}
+}
+function isVariableDeclaredInFunction (identifierNode) { // returns the Scope if it is
+	var name = identifierNode.name
+	var n = identifierNode
+	if ((n.parent.type === 'FunctionDeclaration'|| n.parent.type === 'FunctionExpression') && n.parent.id === n) {
+		parent = id.parent
+	  }
+	n = n.parent
+	while (n) {
+		var scope = n[kScope]
+		if (scope && scope.has(name)) {
+			return scope
+		}
+		
+		if(isFunction(n)){
+			return false
+		}
+		n = n.parent
+	}
 }
 
 
