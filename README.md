@@ -3,7 +3,7 @@ Supplemental javascript minifier.
 Shortens string literals, property names, variable names, builtin values.  
 Basically, it turns all frequently used strings into short variables and prepends the declaration statement.  
 
-Property names are not mangled (changed). They are preserved as they are but are still minified. The minification is less effective but it's safe. It's a good alternative for when mangling of property names causes issues.
+Property names are not mangled (changed). They are preserved as they are but are still minified. The minification is less effective but it's safe.
 
 # Usage
 ```javascript
