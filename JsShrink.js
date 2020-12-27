@@ -1402,6 +1402,7 @@ function inlineClassObjectProperties(src, options) {
 		
 		if (infoObject) {
 			infoObject.inlined = allProps.size
+			infoObject.inlinedProps = [...allProps].map(([n])=>n)
 		}
 		
 		function getTransformedSrc(){
@@ -1608,7 +1609,8 @@ function Shrink(src, options) {
 	var src_start_Length = src.length
 	
 	var numInlinedItems = 0
-	var numInlinedClassPrperties = 0
+	var numInlinedClassPrperties = "inlinedClassPropsPre" in options && Number.isInteger(options.inlinedClassPropsPre)? options.inlinedClassPropsPre : 0
+	var allInlinedClassPrperties = "inlinedClassPropsAllPre" in options && options.inlinedClassPropsAllPre instanceof Array? options.inlinedClassPropsAllPre : []
 	if (_TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED) {
 		let info = {}
 		let src2 = inlineClassObjectProperties(src, {
@@ -1617,11 +1619,12 @@ function Shrink(src, options) {
 		})
 		if (src2) {
 			src = src2
-			numInlinedClassPrperties = info.inlined
+			numInlinedClassPrperties += info.inlined
+			if(info.inlinedProps instanceof Array) allInlinedClassPrperties = allInlinedClassPrperties.concat(info.inlinedProps)
 			numInlinedItems += numInlinedClassPrperties
 		}
 	}
-	var estimated_this_Gain = 0
+	var estimated_this_Gain = 0, numThisReplaced = 0
 	if (_TO_SHRINK_ALL_THIS && _TO_SHRINK_ALL_VARIABLES) {
 		function shrinkAllThis() {
 			var allThis = [] // [thisRootNode (function | Program), [...ThisStatement-Nodes]]
@@ -1648,6 +1651,7 @@ function Shrink(src, options) {
 			getAllThisInThisObject(ast)
 			if(!allThis.length) return 
 			var changes = 0
+			var numThisReplaced = 0
 			var estimatedSumGain = 0
 			var transformed = transform(src, {ast})
 			allThis.forEach(t => {
@@ -1664,14 +1668,16 @@ function Shrink(src, options) {
 				t[1].forEach(n => n.edit.update(id))
 				root.body[0].prepend("var "+id+"=this;"+(DEBUG?"\n":""))
 				++changes
+				numThisReplaced += t[1].length
 				estimatedSumGain += gain
 			})
 			if(!changes) return 
 			var src2 = transformed.toString()
 			src = src2
-			return estimatedSumGain
+			return [estimatedSumGain, numThisReplaced]
 		}
 		estimated_this_Gain = shrinkAllThis() || 0
+		if(estimated_this_Gain) [estimated_this_Gain, numThisReplaced] = estimated_this_Gain
 	}
 
 	var ast = acorn.parse(src, {
@@ -2041,18 +2047,18 @@ function Shrink(src, options) {
 	if(_DEBUG) {
 		let realGain = src.length - resultCode.length
 		var totalGain = src_start_Length - resultCode.length
-		var estimated_inlining_Gain = totalGain - realGain - estimated_this_Gain
 		console.log({
-			totalGain,
 			shrinkGain_real: realGain,
 			shrinkGain_predicted: sumGain,
 			discr: realGain-sumGain,
+			totalGain,
 			literalsAndProps_Gain,
 			undeclared_globals_Gain,
 			all_variables_Gain,
-			estimated_inlining_Gain,
 			estimated_this_Gain,
+			numThisReplaced,
 			numInlinedClassPrperties,
+			allInlinedClassPrperties,
 			debugInfo,
 			debug_insufficientGainFor,
 		});
@@ -2060,6 +2066,7 @@ function Shrink(src, options) {
 	return resultCode
 }
 module.exports = Shrink 
+Shrink.inlineClassObjectProperties = inlineClassObjectProperties
 
 
 
