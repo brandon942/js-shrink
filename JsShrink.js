@@ -16,7 +16,7 @@ const TO_SHRINK_ALL_PROPERTY_NAMES = 1
 const TO_SHRINK_ALL_UNDECLARED_GLOBALS = 1
 const TO_SHRINK_ALL_VARIABLES_WHEN_POSSIBLE = 1
 const TO_SHRINK_BUILTIN_VALUES = 1 // replaces: undefined, null, Infinity, 
-const TO_SHRINK_ALL_THIS = 1 // this.
+const TO_SHRINK_ALL_THIS = 1 // "this." => "let x=this; x." if used often enough
 const MIN_PROPERTY_NAME_LENGTH = 3
 const TO_REPLACE_ON_0_GAIN = 0
 // class objects
@@ -381,8 +381,6 @@ function getAllScopeVariableNames(scope) {
 	}
 	return names
 }
-
-
 function walk(ast_node, cb, cbLeave, inExecutionOrder) {
 	// cb(node, parent, previousSibling, index) : "end" | "stop" | "jump"
 	// 	 "end" = stop walking, and don't call the "leave" callbacks
@@ -1104,22 +1102,28 @@ function inlineClassObjectProperties(src, options) {
 		function findClassObject() {
 			function hasMarker(ObjectExpressionNode) {
 				var reg = new RegExp("/\\*\\s*"+CLASS_OBJECT_MARKER+"\\s*\\*/")
-				testStr = src.slice(ObjectExpressionNode.start-(CLASS_OBJECT_MARKER.length + 20), ObjectExpressionNode.start)
+				testStr = src.slice(ObjectExpressionNode.start-(CLASS_OBJECT_MARKER.length*2 + 15), ObjectExpressionNode.start)
 				return reg.test(testStr)
 			}
-			var found
 			walk(ast, n=>{
 				if (n.type == "ObjectExpression" && _offset <= n.start && hasMarker(n)) {
 					_offset = n.start
 					_object_found = 1
-					found = n
+					cObj = n
+					return "end" 
+				}
+				if (n.type == "ClassDeclaration" && _offset <= n.start && n.body && n.body.body) {
+					_offset = n.start
+					_object_found = 1
+					cObj = n
+					cObj._isClass = 1
 					return "end" 
 				}
 			})
-			return  found
 		}
-		var cObj = findClassObject()
-		if (!cObj) return
+		var cObj
+		findClassObject()
+		if (!_object_found) return
 		var objScope = getDirectParentScope(cObj)
 		
 		var allProps = new Map
@@ -1209,8 +1213,15 @@ function inlineClassObjectProperties(src, options) {
 				})
 			}
 			function findAllObjectProperties() {
-				for (const propertyNode of cObj.properties) {
-					if (propertyNode.kind !== "init") continue
+				var properties = cObj._isClass? cObj.body.body : cObj.properties
+				for (let propertyNode of properties) {
+					if(cObj._isClass){
+						if(propertyNode.kind == "constructor") continue
+						if(propertyNode.kind == "get" || propertyNode.kind == "set") continue
+					}
+					else{
+						if (propertyNode.kind !== "init") continue
+					}
 					if (propertyNode.key.type == "Identifier") {
 						var name = propertyNode.key.name
 					}
@@ -1260,7 +1271,7 @@ function inlineClassObjectProperties(src, options) {
 					var numRefs = propNode._refs && propNode._refs.size||0
 					var isIdentifier = propNode.type == "Identifier"
 					var isLiteral = propNode.type == "Literal"
-					var isMethod = propNode.type == "FunctionExpression" && propNode.parent.method
+					var isMethod = propNode.type == "FunctionExpression" && (propNode.parent.method || propNode.parent.kind == "method")
 					
 					var ok = numRefs == 1 
 						|| isLiteral && typeof propNode.value == "string" && numRefs > 1 && numRefs < 3
@@ -1541,10 +1552,14 @@ function inlineClassObjectProperties(src, options) {
 			)
 			
 			if (toRemoveProps.size) {
-				let isFormatted = /\s/.test(src[cObj.start+1])		
-				let delim = ","
-				if(isFormatted) delim += "\n"
-				cObj.edit.update( "{"+ cObj.properties.filter(p => !toRemoveProps.has(p)).map(p=>p.source()).join(delim) +"}" )
+				if (cObj._isClass) {
+					toRemoveProps.forEach(p => p.edit.update(""))
+				} else {
+					let isFormatted = /\s/.test(src[cObj.start+1])		
+					let delim = ","
+					if(isFormatted) delim += "\n"
+					cObj.edit.update( "{"+ cObj.properties.filter(p => !toRemoveProps.has(p)).map(p=>p.source()).join(delim) +"}" )
+				}
 			}
 			return result.toString()
 		}
@@ -2042,20 +2057,9 @@ function Shrink(src, options) {
 			debug_insufficientGainFor,
 		});
 	}
-	
 	return resultCode
 }
-module.exports = Shrink
-
-
-
-
-
-
-
-
-
-
+module.exports = Shrink 
 
 
 
