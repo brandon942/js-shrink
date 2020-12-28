@@ -128,6 +128,7 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 				if (scopeNode.start <= refNode.start && scopeNode.end >= refNode.end) {
 					return true
 				}
+				continue
 			}
 			// ordered from here
 			if (scopeNode.start > refNode.end) {
