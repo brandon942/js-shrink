@@ -155,9 +155,6 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 			if (aParentScope.newVars) {
 				var referencedNodesSet = aParentScope.newVars.get(id)
 				if (referencedNodesSet) {
-					if (isInBlockScope) {
-						return false
-					}
 					if(areRefsInScope(referencedNodesSet, node)){
 						return false
 					}
@@ -1356,6 +1353,32 @@ function inlineClassObjectProperties(src, options) {
 					}
 					
 				}
+				function checkMethodArgumentNameCollisions() {
+					var has
+					for (const [name, propNode] of allProps) {
+						if(!propNode._isMethod) continue
+						var methodScope = scan.scope(propNode)
+						for (const refNode of propNode._refs) {
+							let refCallExpressionNode = [...propNode._refs][0].parent
+							for (var i = 0; i < refCallExpressionNode.arguments.length; i++) {
+								var arg = refCallExpressionNode.arguments[i]
+								walk(arg, n=>{
+									var binding = scan.binding(n)
+									if (binding && methodScope.bindings.has(binding.name)) {
+										has = true
+										return "end"
+									}
+								})
+								if (has) {
+									propNode._hasArgNameCols = true
+									return true
+								}
+							}
+						}
+					}
+					
+				}
+				checkMethodArgumentNameCollisions()
 				
 				findOutsideRefs()
 				allProps.forEach((propNode, name)=>{
@@ -1380,6 +1403,11 @@ function inlineClassObjectProperties(src, options) {
 						allProps.delete(name)
 					}
 				})
+				allProps.forEach((propNode, name)=>{
+					if (propNode._hasArgNameCols) {
+						allProps.delete(name)
+					}
+				})
 			}
 			else{
 				allProps.forEach((propNode, name)=>{
@@ -1392,6 +1420,15 @@ function inlineClassObjectProperties(src, options) {
 						})
 					}
 					
+				})
+				allProps.forEach((propNode, name)=>{
+					if (propNode._hasArgNameCols) {
+						var methodScope = scan.scope(propNode)
+						methodScope.bindings.forEach(b=>{
+							let name = gimmeSomethingUnique()
+							b.references.forEach(r=>r._rn = name)
+						})
+					}
 				})
 			}
 		}
@@ -1682,7 +1719,7 @@ function Shrink(src, options) {
 		ecmaVersion: "latest",
 	})
 	scan.crawl(ast) 
-	
+		
 	var rootScope = scan.scope(ast)
 	var stringLiterals = findAllStringLiterals(ast, _TO_SHRINK_ALL_PROPERTY_NAMES, _MIN_PROPERTY_NAME_LENGTH)
 	var all_string_literals = [...stringLiterals] // [[stringName, [ast_nodes,...], identifier, S[reserved names], maxNewIdentifierLength, gain], ...]
