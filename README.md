@@ -1,9 +1,9 @@
 # js-shrink
-Supplemental javascript minifier.
+Supplemental javascript minifier.   
 Shortens string literals, property names, variable names, builtin values.  
 Basically, it turns all frequently used strings into short variables and prepends the declaration statement.  
 
-Property names are not mangled (changed). They are preserved as they are but are still minified. The minification through substitution is less effective than actual mangling but it's safer.
+Property names are not mangled (changed). They are preserved as they are but are still minified in the same way strings are. The minification is less effective than mangling but safer (can't break anything) and works for all property names. The downside is probably a slightly higher memory cost.
 
 # Usage
 ```javascript
@@ -27,7 +27,7 @@ var out_code = shrink(in_code, {
    
 
 # Class property inlining
-If the option `classObjects` is true then class methods & properties will be inlined if they're used only once or removed if they're not used anywhere. The comment `/* CLASS_OBJECT */` needs to be placed in front of the objects. This can only work safely for unique property names so names that are not unique are excluded from inlining.
+If the option `classObjects` is set to true then class methods & properties will be inlined if they're used only once or removed if they aren't used anywhere. The comment `/* CLASS_OBJECT */` needs to be placed in front of the objects. This can only work safely for unique property names so names that are not unique are excluded from inlining.
 ```javascript
 
 var myClass = /* CLASS_OBJECT */ {
@@ -49,8 +49,7 @@ myClass.init()
 
 // Also works with the class syntax, no comment marker needed
 class User {
-	constructor(name) {
-	}
+	constructor(name) {}
 	method1(){}
 	method2(){}
 }
