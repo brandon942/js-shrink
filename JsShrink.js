@@ -30,7 +30,6 @@ const CLASS_OBJECT_MARKER = "CLASS_OBJECT"
 var acorn = require("acorn");
 var scan = require('./scope-analyzer')
 var transform = require('transform-ast');
-
 const keywords = new Set(
 	["abstract", "arguments", "await", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue", "debugger", "default", 
 	"delete", "do", "double", "else", "enum", "eval", "export", "extends", "false", "final", "finally", "float", "for", "function", "goto", "if", 
@@ -360,7 +359,7 @@ function getMaxIdentifierLengthForPropsLiterals(originalLiteral, toAllow_0_Gain,
 		var hasGain = toAllow_0_Gain? gain >= 0 : gain > 0
 		if(!hasGain) break
 		++newIdentifierLength
-		if (newIdentifierLength > 10) { // cap at 10
+		if (newIdentifierLength > 8) { // cap at 8
 			break;
 		}
 	}
@@ -604,6 +603,11 @@ function ToNotWrapExpressionInRoundParantheses(inlinedNode, replacedNode) {
 			&& !(replacedNode && replacedNode.parent && replacedNode.parent.type == "MemberExpression" && typeof inlinedNode.value == "number")
 		|| inlinedNode.type == "Identifier" 
 		|| inlinedNode.type == "MemberExpression"
+}
+function isBindingExistenceChecked(binding) {
+	for (const ref of binding.references) {
+		if(ref.parent.type == "UnaryExpression" && ref.parent.operator == "typeof") return true
+	}
 }
 function isCallNode(node) {
 	return node.type === "CallExpression" 
@@ -1644,8 +1648,8 @@ function Shrink(src, options) {
 	var src_start_Length = src.length
 	
 	var numInlinedItems = 0
-	var numInlinedClassPrperties = "inlinedClassPropsPre" in options && Number.isInteger(options.inlinedClassPropsPre)? options.inlinedClassPropsPre : 0
-	var allInlinedClassPrperties = "inlinedClassPropsAllPre" in options && options.inlinedClassPropsAllPre instanceof Array? options.inlinedClassPropsAllPre : []
+	var numInlinedClassPrperties = options && "inlinedClassPropsPre" in options && Number.isInteger(options.inlinedClassPropsPre)? options.inlinedClassPropsPre : 0
+	var allInlinedClassPrperties = options && "inlinedClassPropsAllPre" in options && options.inlinedClassPropsAllPre instanceof Array? options.inlinedClassPropsAllPre : []
 	if (_TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED) {
 		let info = {}
 		let src2 = inlineClassObjectProperties(src, {
@@ -1747,6 +1751,7 @@ function Shrink(src, options) {
 		let all_undeclared_bindings = [...rootScope.undeclaredBindings].map(x=>x[1])
 		items_undeclared = all_undeclared_bindings
 			.filter(b => b.references.size > 1 && b.name.length >= 3) // at least 2 occurrences and at least 3 characters long
+			.filter(b => !isBindingExistenceChecked(b)) // should be guaranteed to exist
 			.map(binding => {
 				var maxIdentifierLength = maxIdentifierLengthFor(binding.references.size, binding.name.length, _TO_REPLACE_ON_0_GAIN)
 				return ["u", binding.references.size, binding, maxIdentifierLength]
