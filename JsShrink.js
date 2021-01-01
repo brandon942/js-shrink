@@ -1378,7 +1378,6 @@ function inlineClassObjectProperties(src, options) {
 								})
 								if (has) {
 									propNode._hasArgNameCols = true
-									return true
 								}
 							}
 						}
