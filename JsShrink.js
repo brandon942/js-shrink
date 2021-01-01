@@ -154,6 +154,9 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 			if (aParentScope.newVars) {
 				var referencedNodesSet = aParentScope.newVars.get(id)
 				if (referencedNodesSet) {
+					if (isInBlockScope) {
+						return false
+					}
 					if(areRefsInScope(referencedNodesSet, node)){
 						return false
 					}
