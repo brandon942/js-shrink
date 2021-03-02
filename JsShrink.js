@@ -3,12 +3,6 @@
 
 
 
-
-
-
-
-
-
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -72,6 +66,11 @@ const gimmeSomethingUnique = (() => {
         return prefix+(++counter);
     }
 })();
+function isJsAlphanum(char){
+	if(!char) return false;
+	char = char.charCodeAt(0);
+	return char > 47 && char < 58 || char > 96 && char < 123 || char > 64 && char < 91 || char === 95 || char === 36;
+}
 function getAllTakenNamesFor(ast_nodes) {
 	// gets all variable names (as string) declared in each scope (and parent scopes) and merges them
 	var scopes = new Set
@@ -2049,6 +2048,11 @@ function Shrink(src, options) {
 						debugInfo.replacedLiterals.add(name)
 					}
 				}
+			}
+			
+			// Fixes: return"something"
+			if (isJsAlphanum(src[node.start-1])) {
+				id = " "+id
 			}
 			
 			node.edit.update(id)
