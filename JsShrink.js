@@ -3,6 +3,12 @@
 
 
 
+
+
+
+
+
+
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -2053,6 +2059,10 @@ function Shrink(src, options) {
 			// Fixes: return"something"
 			if (isJsAlphanum(src[node.start-1])) {
 				id = " "+id
+			}
+			// Fixes: "something"in object1
+			if (isJsAlphanum(src[node.end])) {
+				id = id+" "
 			}
 			
 			node.edit.update(id)
