@@ -40,7 +40,7 @@ const keywords = new Set(
 )
 
 
-base54 = (() => {
+const base54 = (() => {
     const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ$_0123456789"
     function base54(num) {
         var ret = "", base = 54;
