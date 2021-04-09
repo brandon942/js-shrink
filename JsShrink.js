@@ -1982,10 +1982,14 @@ function Shrink(src, options) {
 	
 	// replace literals
 	var stringLiterals_nodesMap = new Map // node => tuple
-	all_string_literals.forEach(t => t[1][0].forEach(n => stringLiterals_nodesMap.set(n, t))) // node => identifier
+	if (isGainOk_const) {
+		all_string_literals.forEach(t => t[1][0].forEach(n => stringLiterals_nodesMap.set(n, t))) // node => identifier
+	}
 	if (_TO_SHRINK_ALL_UNDECLARED_GLOBALS) {
 		var undeclared_globals_nodesMap = new Map // node => Binding
-		undeclared_globals_to_replace.forEach(b => b.references.forEach(n => undeclared_globals_nodesMap.set(n, b)))
+		if (isGainOk_let) {
+			undeclared_globals_to_replace.forEach(b => b.references.forEach(n => undeclared_globals_nodesMap.set(n, b)))
+		}
 	}
 	if (_TO_SHRINK_BUILTIN_VALUES) {
 		var builtin_values_nodesMap = new Map
