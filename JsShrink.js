@@ -1993,7 +1993,9 @@ function Shrink(src, options) {
 	}
 	if (_TO_SHRINK_BUILTIN_VALUES) {
 		var builtin_values_nodesMap = new Map
-		builtin_values_to_replace.forEach(b => b[2].forEach(n => builtin_values_nodesMap.set(n, b)))
+		if (isGainOk_const) {
+			builtin_values_to_replace.forEach(b => b[2].forEach(n => builtin_values_nodesMap.set(n, b)))
+		}
 	}
 	
 	var debugInfo = {
