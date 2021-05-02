@@ -181,8 +181,15 @@ function visitScope (node) {
 }
 function visitBinding (node) {
   assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: visitBinding: node must be an ast node')
-  if (isVariable(node)) {
-    registerReference(node)
+  if(isLabel(node)){
+	  var scopeNode = getNearestScope(node.parent, false)
+	  var scope = createScope(scopeNode)
+	  if(!scope.labels) scope.labels = {} // labelName => [...node]
+	  if(!scope.labels[node.name]) scope.labels[node.name] = []
+	  scope.labels[node.name].push(node)
+  }
+  else if (isVariable(node)) {
+	  registerReference(node)
   }
 }
 
@@ -402,6 +409,9 @@ function isVariable (node) {
     (node.parent.type !== 'MemberExpression' || node.parent.object === node ||
       (node.parent.property === node && node.parent.computed)) &&
     !isImportName(node)
+}
+function isLabel (node) {
+  return node.type === 'Identifier' && node.parent.label === node
 }
 
 function isFunctionArgumentsKeyword (node) {
