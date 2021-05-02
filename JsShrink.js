@@ -213,6 +213,17 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 		}
 		variableItems.forEach(t => gain += (t[4].length - t[0].length) * t[1])
 	}
+	function assignNewLabelNames(labels) {
+		var nameCounter = -1
+		for (var labelName in labels) {
+			var nodes = labels[labelName];
+			var aname = base54(++nameCounter)
+			for (const node of nodes) {
+				node._v = aname
+				gain += node.name.length - aname.length
+			}
+		}
+	}
 	
 	var n = ast_node
 	while (n.parent) n = n.parent
@@ -223,6 +234,7 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 		var scope = scan.scope(node)
 		if (scope) {
 			assignNewNames(scope, node, otherIdentifiersInThisScope)
+			if(scope.labels) assignNewLabelNames(scope.labels)
 		}
 		otherIdentifiersInThisScope = null
 	})
