@@ -5,10 +5,6 @@
 
 
 
-
-
-
-
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -379,7 +375,7 @@ function getMaxIdentifierLengthForPropsLiterals(originalLiteral, toAllow_0_Gain,
 		var hasGain = toAllow_0_Gain? gain >= 0 : gain > 0
 		if(!hasGain) break
 		++newIdentifierLength
-		if (newIdentifierLength > 8) { // cap at 8
+		if (newIdentifierLength > 10) { // cap at 8
 			break;
 		}
 	}
@@ -564,7 +560,7 @@ function getRefsInScope(referencedNodesSet, scopeNode) {
 	return refs
 }
 function getDirectParentScope(node) {
-	return scan.scope(scan.nearestScope(node, true)) || scan.scope(scan.nearestScope(node)) 
+	return scan.nearestScope(node, true) || scan.nearestScope(node) 
 }
 function getNodeDepth(node) {
 	var depth = 1
@@ -922,7 +918,7 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 			if (node._funDeclarations && node._funDeclarations.size) {
 				var scopeFDs = new Map
 				for (const d of node._funDeclarations) {
-					let fscope = scan.scope(scan.nearestScope(d, true)) || scan.scope(scan.nearestScope(d))
+					let fscope = scan.nearestScope(d, true) || scan.nearestScope(d)
 					let block
 					if (fscope.n.type == "BlockStatement") {
 						block = fscope.n
@@ -1175,7 +1171,7 @@ function inlineClassObjectProperties(src, options) {
 						|| node.parent.type == "AssignmentExpression" && node.parent.left == node
 				}
 				for (const [n, propNode] of allProps) {
-					propNode._refs = new Set
+					if(propNode) propNode._refs = new Set
 				}
 				walk(ast, node=>{
 					var name = null
@@ -1248,6 +1244,7 @@ function inlineClassObjectProperties(src, options) {
 						var name = propertyNode.key.value 
 					}
 					else continue
+					if(!propertyNode.value) continue
 					if(hasExpressionCalls(propertyNode.value)) continue
 					allProps.set(name, propertyNode.value)
 					propertyNode.value._name = name
@@ -1335,10 +1332,6 @@ function inlineClassObjectProperties(src, options) {
 								var refs = getRefsInScope(b.references, propNode)
 								if (refs) propNode._outsideRefs.set(b.name, [b, refs])
 							}
-							for (const [,b] of aScope.undeclaredBindings) {
-								var refs = getRefsInScope(b.references, propNode)
-								if (refs) propNode._outsideRefs.set(b.name, [b, refs])
-							}
 						} while (aScope = aScope.parent);
 					}
 				}
@@ -1357,7 +1350,7 @@ function inlineClassObjectProperties(src, options) {
 				function findCoveringBindings() {
 					for (const [name, propNode] of allProps) {
 						for (const refNode of propNode._refs) {
-							var refScope = scan.scope(scan.nearestScope(refNode, true)) || scan.scope(scan.nearestScope(refNode))
+							var refScope = scan.nearestScope(refNode, true) || scan.nearestScope(refNode)
 							var commonScope = objScope
 							var outsideBindings = propNode._outsideRefs
 							var aScope = refScope
@@ -1473,7 +1466,7 @@ function inlineClassObjectProperties(src, options) {
 			function setInMovementInfo(node, inDepth=0) {
 				let had = node._refDepth != null
 				let depth = Math.max(inDepth, node._refDepth||0) 
-				if(depth > inDepth || had) return 
+				if(depth == inDepth || had) return 
 				node._refDepth = depth
 				if (node._refs) {
 					for (const refNode of node._refs) {
@@ -1558,9 +1551,12 @@ function inlineClassObjectProperties(src, options) {
 					if(!toNotWrapInRoundParantheses || isNumberUsedLikeObject){
 						varSrc = "("+varSrc+")"
 					}
+					if (refNode.parent.type == "ExpressionStatement" && varSrc[0] == "(" && !isPreceededBy(refNode.parent, n=>n.type == "EmptyStatement")
+					) {
+						varSrc = ";"+varSrc
+					}
 					
 					refNode.edit.update(varSrc)
-					transform_addSemicolIfNeeded(refNode)
 				}
 				else if (editType == "prependFBA") { 
 					let varDeclarationNode = refNode
@@ -1648,6 +1644,44 @@ function inlineClassObjectProperties(src, options) {
 	}
 	
 	return _changes && src
+}
+function sortScopeBindingsByPositionInCode(scope) {
+	// The declaration node is at the top of binding.references, regardless of source position. 
+	// The rest is sorted by source position
+	for (const [id, binding] of scope.bindings) {
+		if (binding.references.size >= 3) {
+			var [declaration, ...refs] = [...binding.references]
+			refs.sort((a, b) => a.start - b.start)
+			// Set is stable by spec. It guarantees that it is iterated in the same order in which items have been added
+			binding.references = new Set([declaration, ...refs])
+		}
+	}
+	var children = scope.children
+	if (children) {
+		for (const child of children) {
+			sortScopeBindingsByPositionInCode(child)
+		}
+	}
+}
+function JsEscapeString(string) { 
+	return ('' + string).replace(/["'\\\n\r\u2028\u2029\u2003]/g, function (character) {
+	  switch (character) {
+		case '"':
+		case "'":
+		case '\\':
+		  return '\\' + character
+		case '\n':
+		  return '\\n'
+		case '\r':
+		  return '\\r'
+		case '\u2028':
+		  return '\\u2028'
+		case '\u2029':
+		  return '\\u2029'
+		case '\u2003':
+		  return '\\u2003'
+	  }
+	})
 }
 
 function Shrink(src, options) {
@@ -1744,6 +1778,7 @@ function Shrink(src, options) {
 	scan.crawl(ast) 
 		
 	var rootScope = scan.scope(ast)
+	sortScopeBindingsByPositionInCode(rootScope)
 	var stringLiterals = findAllStringLiterals(ast, _TO_SHRINK_ALL_PROPERTY_NAMES, _MIN_PROPERTY_NAME_LENGTH)
 	var all_string_literals = [...stringLiterals] // [[stringName, [ast_nodes,...], identifier, S[reserved names], maxNewIdentifierLength, gain], ...]
 		.filter(([str, tuple]) => {
@@ -1786,12 +1821,13 @@ function Shrink(src, options) {
 	
 	var all_variables_Gain = 0
 	var iife_wrapper_node = getIIFEBodyBlockNode(ast)
-	var top_scope = iife_wrapper_node && scan.scope(scan.nearestScope(iife_wrapper_node)) || scan.scope(ast)
+	var top_scope = iife_wrapper_node && scan.nearestScope(iife_wrapper_node) || scan.scope(ast)
 	
 	while(true){
 		var debug_insufficientGainFor = []
-		var undeclared_globals_to_replace = []
 		var builtin_values_to_replace = []
+		var undeclared_globals_to_replace = []
+		var undeclared_globals_to_replace_variable = [], undeclared_globals_to_replace_constant = []
 		
 		let all_items = [...items_literals, ...items_undeclared, ...items_builtins]
 		all_items.sort(([, aLength], [, bLength]) => bLength - aLength)
@@ -1922,18 +1958,34 @@ function Shrink(src, options) {
 		// undeclared globals must be in a separate "let ;" statement because they can be assigned to (are not always constant)
 		// if the gain is not enough for the "let" statement then omit the globals and recreate the variables without the globals competing for them
 		var undeclared_globals_Gain = 0
+		var undeclared_globals_variable_Gain = 0
+		var undeclared_globals_constant_Gain = 0
 		var sumGain_let = 0
 		if (_TO_SHRINK_ALL_UNDECLARED_GLOBALS && undeclared_globals_to_replace.length) {
-			undeclared_globals_Gain = undeclared_globals_to_replace.reduce((sum, b) =>{
+			var reduceGainFunctionUndeclaredGlobals = (sum, b) =>{
 				var decl_cost = b.name.length + b.id.length + 2
 				var gain = (b.name.length - b.id.length) * b.references.size
 				return sum + gain - decl_cost
-			}, 0)
-			var sumGain_let = undeclared_globals_Gain
+			}
+			undeclared_globals_to_replace.forEach(binding => {
+				if (isVariableAssignedTo(binding)) {
+					undeclared_globals_to_replace_variable.push(binding)
+				}
+				else {
+					undeclared_globals_to_replace_constant.push(binding)
+				}
+			})
+			undeclared_globals_variable_Gain = undeclared_globals_to_replace_variable.reduce(reduceGainFunctionUndeclaredGlobals, 0)
+			undeclared_globals_constant_Gain = undeclared_globals_to_replace_constant.reduce(reduceGainFunctionUndeclaredGlobals, 0)
+			undeclared_globals_Gain = undeclared_globals_variable_Gain + undeclared_globals_constant_Gain
+			
+			var sumGain_let = undeclared_globals_variable_Gain
 			sumGain_let -= 4 // "let;"
 			var isGainOk_let = _TO_REPLACE_ON_0_GAIN? sumGain_let >= 0 : sumGain_let > 0
-			if(!isGainOk_let && (_TO_SHRINK_ALL_STRING_LITERALS || _TO_SHRINK_ALL_PROPERTY_NAMES || _TO_SHRINK_BUILTIN_VALUES)){
-				items_undeclared = []
+			if(!isGainOk_let && undeclared_globals_to_replace_variable.length && (_TO_SHRINK_ALL_STRING_LITERALS || _TO_SHRINK_ALL_PROPERTY_NAMES || _TO_SHRINK_BUILTIN_VALUES)){
+				items_undeclared = items_undeclared.filter(item => !undeclared_globals_to_replace_variable.includes(item[2]))
+				undeclared_globals_to_replace_variable.length = 0
+				undeclared_globals_to_replace = undeclared_globals_to_replace_constant
 				continue
 			}
 		}
@@ -1959,15 +2011,15 @@ function Shrink(src, options) {
 			return sum + gain - decl_cost
 		}, 0)
 	}
-	var sumGain_const = literalsAndProps_Gain + builtin_values_Gain
+	var sumGain_const = literalsAndProps_Gain + builtin_values_Gain + undeclared_globals_constant_Gain
 	sumGain_const -= 6 // "const;"
 	var isGainOk_const = _TO_REPLACE_ON_0_GAIN? sumGain_const >= 0 : sumGain_const > 0
 	var sumGain = (isGainOk_const? sumGain_const : 0) + (isGainOk_let? sumGain_let : 0) + all_variables_Gain
 	if(!isGainOk_const && !isGainOk_let && !all_variables_Gain && !numInlinedItems){
-		console.log("gain not big enough", sumGain_const + sumGain_let);
+		console.log("gain not big enough", sumGain);
 		return false
 	}
-	var _allReplacements = all_string_literals.length + undeclared_globals_to_replace.length + builtin_values_to_replace.length
+	var _allReplacements = all_string_literals.length + undeclared_globals_to_replace_variable.length + undeclared_globals_to_replace_constant.length + builtin_values_to_replace.length
 	if (!_allReplacements && !_TO_SHRINK_ALL_VARIABLES && !numInlinedItems) {
 		console.log("no suitable replacements available");
 		return false
@@ -1976,19 +2028,26 @@ function Shrink(src, options) {
 	// create the declaration statement (eg. `const a="literal1", b=.....;`) 
 	var declaration_string = ""
 	if (isGainOk_const) {
-		declaration_string += "const " + all_string_literals.map(t => 
-			t[2] + "=" + _CONST_DECLARATION_QUOTE_CHARACTER + escapeCharacter(t[0], _CONST_DECLARATION_QUOTE_CHARACTER) + _CONST_DECLARATION_QUOTE_CHARACTER
-		)
+		declaration_string += "const " + all_string_literals.map(t => {
+			// t[2] + "=" + _CONST_DECLARATION_QUOTE_CHARACTER + escapeCharacter(t[0], _CONST_DECLARATION_QUOTE_CHARACTER) + _CONST_DECLARATION_QUOTE_CHARACTER
+			var escaped = _CONST_DECLARATION_QUOTE_CHARACTER === "`"? escapeCharacter(t[0], _CONST_DECLARATION_QUOTE_CHARACTER) : t[0]
+			escaped = JsEscapeString(escaped)
+			return t[2] + "=" + _CONST_DECLARATION_QUOTE_CHARACTER + escaped + _CONST_DECLARATION_QUOTE_CHARACTER
+		})
 		.concat(builtin_values_to_replace.map(b => 
 			b[1] + "=" + b[0]
+		))
+		.concat(undeclared_globals_to_replace_constant.map(b => 
+			b.id + "=" + b.name
 		))
 		.join(",") + ";"
 	}
 	if (isGainOk_let) {
-		declaration_string += "let " + undeclared_globals_to_replace.map(b => 
+		let undeclared_globals_declaration = "let " + undeclared_globals_to_replace_variable.map(b => 
 			b.id + "=" + b.name
 		)
 		.join(",") + ";"
+		declaration_string += undeclared_globals_declaration
 	}
 	
 	
@@ -1999,7 +2058,7 @@ function Shrink(src, options) {
 	}
 	if (_TO_SHRINK_ALL_UNDECLARED_GLOBALS) {
 		var undeclared_globals_nodesMap = new Map // node => Binding
-		if (isGainOk_let) {
+		if (isGainOk_let || isGainOk_const) {
 			undeclared_globals_to_replace.forEach(b => b.references.forEach(n => undeclared_globals_nodesMap.set(n, b)))
 		}
 	}
@@ -2141,6 +2200,4 @@ function Shrink(src, options) {
 }
 module.exports = Shrink 
 Shrink.inlineClassObjectProperties = inlineClassObjectProperties
-
-
 
