@@ -5,6 +5,7 @@ var kScope = Symbol('scope')
 var kBinding = Symbol('bind')
 var kIsDefinition = Symbol('def')
 
+exports.bindingKey = kBinding
 exports.createScope = createScope
 exports.visitScope = visitScope
 exports.visitBinding = visitBinding
@@ -13,13 +14,16 @@ exports.analyze = crawl // old name
 exports.clear = clear
 exports.deleteScope = deleteScope
 exports.nearestScope = getNearestScope
+exports.getNearestScopeNode = getNearestScopeNode
 exports.scope = getScope
 exports.getBinding = getBinding
 exports.binding = getDeclaredBinding
 exports.isDefinition = isNodeDefinition
 exports.isBlockScopeNode = isBlockScopeNode
+/** @typedef {Binding} Binding */
+/** @typedef {Scope & {children: ScopeType[]}} ScopeType */
 
-
+/** @returns {Binding} */
 function getDeclaredBinding(node) {
 	return node[kBinding]
 }
@@ -28,10 +32,12 @@ function isNodeDefinition(node) {
 }
 
 
-function Binding (name, definition) {
+
+function Binding (name, definition, isConst) {
 	this.name = name
 	this.definition = definition
 	this.references = new Set()
+	if(isConst) this.isConst = true
   
 	if (definition){
 		this.add(definition)
@@ -73,9 +79,14 @@ function Binding (name, definition) {
 	return this
   }
   
-function Scope (parent) {
+/**
+ * @type {ScopeType}
+ */
+function Scope (/** @type {ScopeType} */ parent) {
 	this.parent = parent
+	/** @type {Map<Node, Binding>} */
 	this.bindings = new Map()
+	/** @type {Map<Node, Binding>} */
 	this.undeclaredBindings = new Map()
 	if (parent) {
 	  if (!parent.children) {
@@ -86,16 +97,16 @@ function Scope (parent) {
 }
 
 Scope.prototype.define = function (binding) {
-  if (this.bindings.has(binding.name)) {
-    var existing = this.bindings.get(binding.name)
-    binding.getReferences().forEach(function (ref) {
-      existing.add(ref)
-    })
-  } else {
-	this.bindings.set(binding.name, binding)
-	binding.scope = this
-  }
-  return this
+	var existing = this.bindings.get(binding.name)
+	if (existing) {
+		binding.getReferences().forEach(function (ref) {
+			existing.add(ref)
+		})
+	} else {
+		this.bindings.set(binding.name, binding)
+		binding.scope = this
+	}
+	return this
 }
 
 Scope.prototype.has = function (name) {
@@ -115,7 +126,6 @@ Scope.prototype.depth = function (functions) {
 	while (scope = scope.parent) (!functions || functions && !this.isBlock) && ++depth
 	return depth
 }
-
 Scope.prototype.addUndeclared = function (name, ref) {
   if (!this.undeclaredBindings.has(name)) {
     this.undeclaredBindings.set(name, new Binding(name))
@@ -154,11 +164,15 @@ Scope.prototype.forEachAvailable = function (cb) {
 }
 
 
-// create a new scope at a node.
+
+
+
+
+
 function createScope (node, bindings) {
   assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: createScope: node must be an ast node')
   if (!node[kScope]) {
-	var parent = getParentScope(node)
+    var parent = getParentScope(node)
 	let scope = new Scope(parent)
 	node[kScope] = scope
 	scope.n = node
@@ -171,42 +185,45 @@ function createScope (node, bindings) {
   }
   return node[kScope]
 }
+	
 
-// Separate scope and binding registration steps, for post-order tree walkers.
-// Those will typically walk the scope-defining node _after_ the bindings that belong to that scope,
-// so they need to do it in two steps in order to define scopes first.
 function visitScope (node) {
   assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: visitScope: node must be an ast node')
   registerScopeBindings(node)
 }
 function visitBinding (node) {
+	
+	
   assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: visitBinding: node must be an ast node')
-  if(isLabel(node)){
-	  var scopeNode = getNearestScope(node.parent, false)
-	  var scope = createScope(scopeNode)
-	  if(!scope.labels) scope.labels = {} // labelName => [...node]
-	  if(!scope.labels[node.name]) scope.labels[node.name] = []
-	  scope.labels[node.name].push(node)
-  }
-  else if (isVariable(node)) {
-	  registerReference(node)
-  }
+	if(isLabel(node)){
+		var scopeNode = getNearestScopeNode(node.parent, false)
+		var scope = createScope(scopeNode)
+		if(!scope.labels) scope.labels = {} // labelName => [...node]
+		if(!scope.labels[node.name]) scope.labels[node.name] = []
+		scope.labels[node.name].push(node)
+	}
+	else if (isVariable(node)) {
+		registerReference(node)
+	}
 }
 
-function crawl (ast) {
-  assert.ok(typeof ast === 'object' && ast && typeof ast.type === 'string', 'scope-analyzer: crawl: ast must be an ast node')
-  dash(ast, {
-	  enter(node, parent){
-		node.parent = parent
-		visitScope(node)
-	  },
-	  leave(node, parent){
-		removeEmptyBlockScope(node)
-	  }
-  })
-  dash(ast, visitBinding)
+function crawl (ast, options) {
+	assert.ok(typeof ast === 'object' && ast && typeof ast.type === 'string', 'scope-analyzer: crawl: ast must be an ast node')
+	var toLeaveEmpyBlockScopes = options?.leaveEmptyBlockScopes
+	dash(ast, {
+		enter(node, parent){
+			node.parent = parent
+			visitScope(node)
+		},
+		leave(node, parent){
+			if (!toLeaveEmpyBlockScopes) {
+				removeEmptyBlockScope(node)
+			}
+		}
+	})
+	dash(ast, visitBinding)
 
-  return ast
+	return ast
 }
 function removeEmptyBlockScope(node) {
 	var scope = getScope(node)
@@ -236,7 +253,7 @@ function deleteScope (node) {
     delete node[kScope]
   }
 }
-
+/** @returns {ScopeType} */
 function getScope (node) {
   if (node && node[kScope]) {
     return node[kScope]
@@ -256,32 +273,27 @@ function getBinding (identifier) {
 }
 
 function registerScopeBindings (node) {
-	// Before: Scopes were created when variable declarations were encountered. This reduces the amount of scope objects (lower memory) but will break the script logic.
-	// 	Problem: Child scopes aren't always assigned the correct parent.
-	// EDIT: 
-	// - Scopes (+every block scope) are created immediately whenever possible at the start of the node visit
-	// - When a node visit is finished, it is checked if the node's scope is empty. If so then all subscopes are re-pointed to the parent scope, and the empty scope is deleted
   if (node.type === 'Program') {
     createScope(node)
   }
   else if (node.type === 'VariableDeclaration') {
-    var scopeNode = getNearestScope(node, node.kind !== 'var')
+    var scopeNode = getNearestScopeNode(node, node.kind !== 'var')
     var scope = createScope(scopeNode)
     node.declarations.forEach(function (decl) {
       getAssignedIdentifiers(decl.id).forEach(function (id) {
-        scope.define(new Binding(id.name, id))
+        scope.define(new Binding(id.name, id, node.kind === "const"))
       })
     })
   }
   else if (node.type === 'ClassDeclaration') {
-    var scopeNode = getNearestScope(node)
+    var scopeNode = getNearestScopeNode(node, true) 
     var scope = createScope(scopeNode)
     if (node.id && node.id.type === 'Identifier') {
       scope.define(new Binding(node.id.name, node.id))
     }
   }
   else if (node.type === 'FunctionDeclaration') {
-    var scopeNode = getNearestScope(node, false)
+    var scopeNode = getNearestScopeNode(node, false)
     var scope = createScope(scopeNode)
     if (node.id && node.id.type === 'Identifier') {
       scope.define(new Binding(node.id.name, node.id))
@@ -296,7 +308,7 @@ function registerScopeBindings (node) {
     })
   }
   else if (isBlockScopeNode(node)) {
-    var scope = createScope(node)
+	var scope = createScope(node)
   }
   
 	if (node.type === 'FunctionExpression' || node.type === 'ClassExpression') {
@@ -306,7 +318,7 @@ function registerScopeBindings (node) {
     }
   }
   else if (node.type === 'ImportDeclaration') {
-    var scopeNode = getNearestScope(node, false)
+    var scopeNode = getNearestScopeNode(node, false)
     var scope = createScope(scopeNode)
     getAssignedIdentifiers(node).forEach(function (id) {
       scope.define(new Binding(id.name, id))
@@ -331,16 +343,14 @@ function getParentScope (node) {
   }
 }
 
-// Get the scope that a declaration will be declared in
-function getNearestScope (node, blockScope) {
-	// INFO: The for-statement itself is a scope
+function getNearestScopeNode (node, canBeBlockScope) {
   var parent = node
   while (parent.parent) {
     parent = parent.parent
     if (isFunction(parent)) {
       break
     }
-    if (blockScope && isBlockScopeNode(parent)) {
+    if (canBeBlockScope && isBlockScopeNode(parent)) {
       break
     }
     if (parent.type === 'Program') {
@@ -349,19 +359,15 @@ function getNearestScope (node, blockScope) {
   }
   return parent
 }
+function getNearestScope (node, canBeBlockScope) {
+  return getScope(getNearestScopeNode(node, canBeBlockScope))
+}
 function isBlockScopeNode(node) {
 	return node.type === 'BlockStatement' || node.type === 'ForStatement' || node.type === 'ForInStatement' || node.type === 'ForOfStatement'
 }
 
-// Get the scope that this identifier has been declared in
 function getDeclaredScope (id) {
   var parent = id
-  // Jump over one parent if this is a function's name--the variables
-  // and parameters _inside_ the function are attached to the FunctionDeclaration
-  // so if a variable inside the function has the same name as the function,
-  // they will conflict.
-  // Here we jump out of the FunctionDeclaration so we can start by looking at the
-  // surrounding scope
   if ((id.parent.type === 'FunctionDeclaration'|| id.parent.type === 'FunctionExpression') && id.parent.id === id) {
     parent = id.parent
   }
@@ -381,12 +387,12 @@ function registerReference (node) {
     scope.add(node.name, node)
   }
   if (scope && !scope.has(node.name)) {
-    scope.addUndeclared(node.name, node) 
+    scope.addUndeclared(node.name, node) // scope == root scope
   }
 }
 
 function isObjectKey (node) {
-  return node.parent.type === 'Property' &&
+  return node.parent.type === 'Property' && !node.parent.computed &&
     node.parent.key === node &&
     // a shorthand property may have the ===-same node as both the key and the value.
     // we should detect the value part.
@@ -400,15 +406,16 @@ function isImportName (node) {
 }
 
 function isVariable (node) {
-  return node.type === 'Identifier' &&
-  	node.name !== "Infinity" && node.name !== "undefined" && node.name !== "NaN" && 
-	!isObjectKey(node) &&
-	!isMethodDefinition(node) &&
-	!isFunctionArgumentsKeyword(node) &&
-	node.parent.type !== 'LabeledStatement' &&
-    (node.parent.type !== 'MemberExpression' || node.parent.object === node ||
-      (node.parent.property === node && node.parent.computed)) &&
-    !isImportName(node)
+	var _isVariable = node.type === 'Identifier' &&
+		node.name !== "Infinity" && node.name !== "undefined" && node.name !== "NaN" && 
+		!isObjectKey(node) &&
+		!isMethodDefinition(node) &&
+		!isFunctionArgumentsKeyword(node) &&
+		node.parent.type !== 'LabeledStatement' &&
+		(node.parent.type !== 'MemberExpression' || node.parent.object === node ||
+			(node.parent.property === node && node.parent.computed)) &&
+		!isImportName(node)
+  	return _isVariable
 }
 function isLabel (node) {
   return node.type === 'Identifier' && node.parent.label === node
@@ -461,18 +468,18 @@ function isVariableDeclaredInFunction (identifierNode) { // returns the Scope if
 
 
  
-  // estree-is-function ========================================================================================================================
-  function isFunction (node) {
-	if (typeof node !== 'object' || !node) {
-	  throw new TypeError('estree-is-function: node must be an object')
-	}
-  
-	if (typeof node.type !== 'string') {
-	  throw new TypeError('estree-is-function: node must have a string type')
-	}
-  
-	return node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression'
-  }
+// estree-is-function ========================================================================================================================
+function isFunction (node) {
+if (typeof node !== 'object' || !node) {
+	throw new TypeError('estree-is-function: node must be an object')
+}
+
+if (typeof node.type !== 'string') {
+	throw new TypeError('estree-is-function: node must have a string type')
+}
+
+return node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression'
+}
 
 
 
