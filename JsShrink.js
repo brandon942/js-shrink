@@ -4,7 +4,6 @@
 
 
 
-
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -19,6 +18,11 @@ const TO_REPLACE_ON_0_GAIN = 0
 const TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED = 0
 // comment markers
 const CLASS_OBJECT_MARKER = "CLASS_OBJECT"
+const EXCLUDE_FUNCTION_FROM_SHRINK_MARKER = "!EXCLUDE!"
+const DECLARATIONS_HERE_MARKER = "!!!_DECLARATIONS_HERE_!!!"
+// string markers
+const ADD_DECLARATIONS_MARKER = "!!! ADD_DECLARATIONS !!!" // this marker is expected in a string. It is replaced with the generated declaration for all shrunk property names and global objects
+const ADD_DECLARATIONS_MARKER_SAFE = "!!! ADD_DECLARATIONS_SAFE !!!" // like $$$ADD_DECLARATIONS but global objects are existence-checked via `typeof name !== "undefined"`
 
 
 
@@ -236,10 +240,13 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 	})
 	return gain
 }
-function findAllStringLiterals(ast_node, toIncludePropertyKeys=true, minPropertyKeyLength=1) {
-	// string => [[...nodes], m2, p0, p1, p2] // occurrences
+function findAllStringLiterals(ast_node, toIncludePropertyKeys=true, minPropertyKeyLength=1, excludeNodes) {
 	var names = new Map
 	walk(ast_node, node=>{
+		if (excludeNodes?.size && excludeNodes.has(node)) {
+			return "jump"
+		}
+		
 		var name = null
 		var isIdentifier = node.type == "Identifier"
 		var isLiteral = node.type == "Literal"
@@ -255,19 +262,19 @@ function findAllStringLiterals(ast_node, toIncludePropertyKeys=true, minProperty
 				var isComputed = node.parent.computed
 				var isOptional = node.parent.optional
 				if (isLiteral) {
+					// it can be a string, bool, number, ...
 					if(typeof node.value !== "string") return // do not deal with non strings here
 					name = node.value
 				}
 				else if(isTemplateLiteral){
 					name = templateLiteralValue
 				}
-				else if(isIdentifier && !isComputed){ // if computed key then Identifier is a variable
+				else if(isIdentifier && !isComputed){ // if computed key then Identifier is a variable and not a string
 					name = node.name
 				}
 				else{
 					return
 				}
-				
 				//filter
 				let isActuallyALiteral = isComputed  // treat x["literal"] like a literal
 				if (isActuallyALiteral) {
@@ -318,9 +325,13 @@ function findAllStringLiterals(ast_node, toIncludePropertyKeys=true, minProperty
 	})
 	return names
 }
-function findBuiltinValues(ast_node) {
+function findBuiltinValues(ast_node, excludeNodes) {
 	var names = new Map
 	walk(ast_node, node=>{
+		if (excludeNodes?.size && excludeNodes.has(node)) {
+			return "jump"
+		}
+		
 		var isLiteral = node.type === "Literal"
 		var isIdentifier = node.type === "Identifier"
 		if(isLiteral || isIdentifier) {
@@ -1663,13 +1674,16 @@ function sortScopeBindingsByPositionInCode(scope) {
 		}
 	}
 }
-function JsEscapeString(string) { 
-	return ('' + string).replace(/["'\\\n\r\u2028\u2029\u2003]/g, function (character) {
+function JsEscapeString(string, quoteChar) { // Escape any string to be a valid JavaScript string literal between double quotes or single quotes.
+	return ('' + string).replace(/["'`\\\n\r\u2028\u2029\u2003]/g, function (character) {
 	  switch (character) {
 		case '"':
+		case '`':
 		case "'":
+			if(quoteChar !== character) return character
 		case '\\':
 		  return '\\' + character
+		// Four possible LineTerminator characters need to be escaped:
 		case '\n':
 		  return '\\n'
 		case '\r':
@@ -1683,6 +1697,23 @@ function JsEscapeString(string) {
 	  }
 	})
 }
+function isBindingInExcludedArea(binding, excludeNodes, _NOSHRINK_GLOBALS) {
+	// Remove binding if all references are in excluded areas
+	// Remove references that are in excluded areas
+	if (_NOSHRINK_GLOBALS.includes(binding.name)) {
+		return true
+	}
+	if (!excludeNodes?.size) {
+		return false
+	}
+	for (const ref of binding.references) {
+		var isInARange = excludeNodes.some(en => en.start < ref.start && en.end > ref.end)
+		if (isInARange) {
+			binding.references.delete(ref)
+		}
+	}
+	return !binding.references.size
+}
 
 function Shrink(src, options) {
 	const _TO_SHRINK_ALL = options && "all" in options? options.all : false
@@ -1695,12 +1726,20 @@ function Shrink(src, options) {
 	const _MIN_PROPERTY_NAME_LENGTH = options && "minPropertyNameLength" in options? options.minPropertyNameLength : MIN_PROPERTY_NAME_LENGTH
 	const _TO_REPLACE_ON_0_GAIN = options && "allow0Gain" in options? options.allow0Gain : TO_REPLACE_ON_0_GAIN
 	const _CONST_DECLARATION_QUOTE_CHARACTER = options && "quote" in options && typeof options.quote == "string"? options.quote : CONST_DECLARATION_QUOTE_CHARACTER
+	const _NOSHRINK_GLOBALS = options && "globalsToNotShrink" in options && typeof options.globalsToNotShrink == "object"? options.globalsToNotShrink : []
 	const _TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED = _TO_SHRINK_ALL || (options && "classObjects" in options? options.classObjects : TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED)
 	const _DEBUG = options && "debug" in options? options.debug : DEBUG
-
+	
+	const reg_declarationsMarker = new RegExp(`(?:\\/\\/|\\/\\*)[ \\t]*${DECLARATIONS_HERE_MARKER}[ \\t]*(?:\\r?\\n|\\*\\/)`, "g")
+	var declarationsMarker = src.match(reg_declarationsMarker)
+	
+	
 	var src_start_Length = src.length
 	
+	// inlining ----------------------------------------------------------------------------------------------------------------------------------------------------------
 	var numInlinedItems = 0
+	
+	// class object ----------------------------------------------------------------------------------------------------------------------------------------------------------
 	var numInlinedClassPrperties = options && "inlinedClassPropsPre" in options && Number.isInteger(options.inlinedClassPropsPre)? options.inlinedClassPropsPre : 0
 	var allInlinedClassPrperties = options && "inlinedClassPropsAllPre" in options && options.inlinedClassPropsAllPre instanceof Array? options.inlinedClassPropsAllPre : []
 	if (_TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED) {
@@ -1716,10 +1755,12 @@ function Shrink(src, options) {
 			numInlinedItems += numInlinedClassPrperties
 		}
 	}
+	
+	// Shrinking "this"  ----------------------------------------------------------------------------------------------------------------------------------------------------------
 	var estimated_this_Gain = 0, numThisReplaced = 0
 	if (_TO_SHRINK_ALL_THIS && _TO_SHRINK_ALL_VARIABLES) {
 		function shrinkAllThis() {
-			var allThis = [] // [thisRootNode (function | Program), [...ThisStatement-Nodes]]
+			var allThis = [] 
 			function getAllThisInThisObject(rootNode) {
 				var tuple
 				walk(rootNode, n=>{
@@ -1771,18 +1812,38 @@ function Shrink(src, options) {
 		estimated_this_Gain = shrinkAllThis() || 0
 		if(estimated_this_Gain) [estimated_this_Gain, numThisReplaced] = estimated_this_Gain
 	}
+	
 
+	// Shrinking Literals ----------------------------------------------------------------------------------------------------------------------------------------------------------
 	var ast = acorn.parse(src, {
 		ecmaVersion: "latest",
+		// sourceType: "module",
 	})
-	scan.crawl(ast) 
-		
+	scan.crawl(ast)
+	
 	var rootScope = scan.scope(ast)
+	
+	
+	var hasExcludes = src.includes(EXCLUDE_FUNCTION_FROM_SHRINK_MARKER)
+	if (hasExcludes) {
+		var excludeRanges = getExcludeRanges(src, ast, rootScope)
+		var excludeNodes = excludeRanges?.[1]
+		if (!excludeNodes?.size) {
+			excludeNodes = null
+		}
+	}
+	
+	
+	
 	sortScopeBindingsByPositionInCode(rootScope)
-	var stringLiterals = findAllStringLiterals(ast, _TO_SHRINK_ALL_PROPERTY_NAMES, _MIN_PROPERTY_NAME_LENGTH)
-	var all_string_literals = [...stringLiterals] // [[stringName, [ast_nodes,...], identifier, S[reserved names], maxNewIdentifierLength, gain], ...]
+	
+	
+	
+	var stringLiterals = findAllStringLiterals(ast, _TO_SHRINK_ALL_PROPERTY_NAMES, _MIN_PROPERTY_NAME_LENGTH, excludeNodes)
+	var all_string_literals = [...stringLiterals]
 		.filter(([str, tuple]) => {
 			var nodes = tuple[0]
+			
 			var minNumOccurrences = str.length == 1? 4 : str.length == 2? 3 : 2
 			return nodes.length >= minNumOccurrences
 		})
@@ -1790,29 +1851,32 @@ function Shrink(src, options) {
 	
 		
 	
-	// get maximum length of new identifier for each string with positive character gain 
+	// get maximum length of new identifier for each string with positive net character gain  -----------------------------------------------------------------------------
 	all_string_literals.forEach(t => t[4] = getMaxIdentifierLengthForPropsLiterals(t[0], _TO_REPLACE_ON_0_GAIN, t[1][1], t[1][2], t[1][3], t[1][4]))
 	// filter out those with no positive gain
 	all_string_literals = all_string_literals.filter(t => t[4] > 0)
 	
 	
 	
-	// get available identifiers for each literal
+	// get available identifiers for each literal -----------------------------------------------------------------------------
 	// [type, occurrences, object]
-	var items_literals=[], items_undeclared=[], items_builtins=[]
+	var items_literals=[], items_builtins=[], items_undeclared=[]
 	if(_TO_SHRINK_ALL_STRING_LITERALS) items_literals = all_string_literals.map(t => ["s", t[1][0].length, t])
 	if(_TO_SHRINK_ALL_UNDECLARED_GLOBALS){
 		let all_undeclared_bindings = [...rootScope.undeclaredBindings].map(x=>x[1])
 		items_undeclared = all_undeclared_bindings
 			.filter(b => b.references.size > 1 && b.name.length >= 3) // at least 2 occurrences and at least 3 characters long
-			.filter(b => !isBindingExistenceChecked(b)) // should be guaranteed to exist
-			.map(binding => {
+			.filter(b => !isBindingExistenceChecked(b))
+		if (excludeNodes || _NOSHRINK_GLOBALS.length) {
+			items_undeclared = items_undeclared.filter(b => !isBindingInExcludedArea(b, excludeNodes, _NOSHRINK_GLOBALS)) // ignore excluded areas
+		}
+		items_undeclared = items_undeclared.map(binding => {
 				var maxIdentifierLength = maxIdentifierLengthFor(binding.references.size, binding.name.length, _TO_REPLACE_ON_0_GAIN)
 				return ["u", binding.references.size, binding, maxIdentifierLength]
 			})
 	}
 	if (_TO_SHRINK_BUILTIN_VALUES) {
-		items_builtins = [...findBuiltinValues(ast)]
+		items_builtins = [...findBuiltinValues(ast, excludeNodes)]
 			.map(([name, nodes]) => {
 				var maxIdentifierLength = maxIdentifierLengthFor(nodes.length, name.length, _TO_REPLACE_ON_0_GAIN)
 				return ["b", nodes.length, nodes, maxIdentifierLength, name]
@@ -1825,21 +1889,20 @@ function Shrink(src, options) {
 	
 	while(true){
 		var debug_insufficientGainFor = []
-		var builtin_values_to_replace = []
 		var undeclared_globals_to_replace = []
 		var undeclared_globals_to_replace_variable = [], undeclared_globals_to_replace_constant = []
+		var builtin_values_to_replace = []
 		
 		let all_items = [...items_literals, ...items_undeclared, ...items_builtins]
 		all_items.sort(([, aLength], [, bLength]) => bLength - aLength)
-	
+		
 		if (_TO_SHRINK_ALL_VARIABLES) {
-			// convert
 			let items = all_items.map(item => {
 				if(item[0] == "s"){
 					return [null, item[1], item[2][1][0], item[2][4]]
 				}
 				else if(item[0] == "u"){
-					return [null, item[1], item[2].references, item[3]]
+					return [null, item[1], item[2].references, item[3],]
 				}
 				else if(item[0] == "b"){
 					return [null, item[1], item[2], item[3], item[4]]
@@ -1847,7 +1910,6 @@ function Shrink(src, options) {
 			})
 			var topLevelScopeNode = iife_wrapper_node && iife_wrapper_node.parent || ast
 			all_variables_Gain = obtainNewVariableIdentifiers(topLevelScopeNode, items)
-			// convert back & set the name if it was assignd
 			for (var i = 0; i < items.length; i++) {
 				var conv = items[i];
 				var orig = all_items[i];
@@ -1855,13 +1917,13 @@ function Shrink(src, options) {
 					orig[2][2] = conv[0]
 				}
 				else if(orig[0] == "u"){
-					if (conv[0]) { // can be null (= no short enough identifiers available)
+					if (conv[0]) { 
 						orig[2].id = conv[0] 
 						undeclared_globals_to_replace.push(orig[2])
 					}
 				}
 				else if(orig[0] == "b"){
-					if (conv[0]) {
+					if (conv[0]) { 
 						builtin_values_to_replace.push([orig[4], conv[0], orig[2]]) // [name, id, nodes]
 					}
 				}
@@ -1869,6 +1931,7 @@ function Shrink(src, options) {
 		}
 		else{
 			let all_topLevel_variable_names = getAllScopeVariableNames(top_scope)
+			// only the root scope has all the undeclaredBindings
 			var all_undeclared_set =  new Set([...rootScope.undeclaredBindings].map(x=>x[0]))
 			let availableSkippedIdentifiers = new Set
 			let nameCounter = -1
@@ -1907,10 +1970,10 @@ function Shrink(src, options) {
 						undeclared_globals_to_replace.push(binding)
 					}
 					else if(isBuiltins){
-						builtin_values_to_replace.push([name, aname, occurrence_nodes])
+						builtin_values_to_replace.push([name, aname, occurrence_nodes]) // [name, id, nodes]
 					}
 				}
-				var takenNames = getAllTakenNamesFor(occurrence_nodes) // all declared variablles in all scopes (incl. parents) the literal appears in
+				var takenNames = getAllTakenNamesFor(occurrence_nodes)
 				for (const aname of availableSkippedIdentifiers) {
 					if(takenNames.has(aname)){
 						continue
@@ -1928,7 +1991,7 @@ function Shrink(src, options) {
 					if (all_undeclared_set.has(aname)) { // disallowed
 						continue
 					}
-					if(all_topLevel_variable_names.has(aname)){ // disallowed for everybody
+					if(all_topLevel_variable_names.has(aname)){ // the toplevel scope variables are disallowed for everybody
 						continue
 					}
 					if(takenNames.has(aname)){ // disallowed
@@ -1941,7 +2004,6 @@ function Shrink(src, options) {
 						continue literalsLoop
 					}
 					else{ // generated name is too long for this literal to be worth replacing
-						// filter out below
 						if (isLiterals) {
 							tuple[2] = null
 							_DEBUG && debug_insufficientGainFor.push({
@@ -1955,7 +2017,9 @@ function Shrink(src, options) {
 				}
 			}
 		}
-		// undeclared globals must be in a separate "let ;" statement because they can be assigned to (are not always constant)
+		
+		
+		// variable undeclared globals must be in a separate "let ;" statement because they are not constant
 		// if the gain is not enough for the "let" statement then omit the globals and recreate the variables without the globals competing for them
 		var undeclared_globals_Gain = 0
 		var undeclared_globals_variable_Gain = 0
@@ -1991,6 +2055,7 @@ function Shrink(src, options) {
 		}
 		break
 	}
+	
 	// filter out those without a suitable identifier name
 	all_string_literals = all_string_literals.filter(t => t[2] != null)
 	all_string_literals.forEach(t => t[5] = getCharacterGain(t[0].length, t[2].length, t[1][1], t[1][2], t[1][3], t[1][4]))
@@ -1998,11 +2063,13 @@ function Shrink(src, options) {
 		all_string_literals = all_string_literals.filter(t => t[5] > 0)
 	}
 	
-	// calculate sizes
+	
+	// calculate sizes -----------------------------------------------------------------------------
 	var literalsAndProps_Gain = 0
 	if (_TO_SHRINK_ALL_STRING_LITERALS || _TO_SHRINK_ALL_PROPERTY_NAMES) {
 		literalsAndProps_Gain = all_string_literals.reduce((sum, t) => t[5] + sum, 0)
 	}
+	
 	var builtin_values_Gain = 0
 	if (_TO_SHRINK_BUILTIN_VALUES && builtin_values_to_replace.length) {
 		builtin_values_Gain = builtin_values_to_replace.reduce((sum, b) =>{
@@ -2025,13 +2092,16 @@ function Shrink(src, options) {
 		return false
 	}
 	
-	// create the declaration statement (eg. `const a="literal1", b=.....;`) 
+	// create the declaration statement (eg. `const a="literal1", b=.....;`) -----------------------------------------------------------------------------
 	var declaration_string = ""
+	var declaration_string_safe = ""
 	if (isGainOk_const) {
 		declaration_string += "const " + all_string_literals.map(t => {
-			// t[2] + "=" + _CONST_DECLARATION_QUOTE_CHARACTER + escapeCharacter(t[0], _CONST_DECLARATION_QUOTE_CHARACTER) + _CONST_DECLARATION_QUOTE_CHARACTER
-			var escaped = _CONST_DECLARATION_QUOTE_CHARACTER === "`"? escapeCharacter(t[0], _CONST_DECLARATION_QUOTE_CHARACTER) : t[0]
+			var escaped = t[0]
 			escaped = JsEscapeString(escaped)
+			if (_CONST_DECLARATION_QUOTE_CHARACTER === "`") {
+				escaped = escaped.replace(/\$\{/g, "\\${")
+			}
 			return t[2] + "=" + _CONST_DECLARATION_QUOTE_CHARACTER + escaped + _CONST_DECLARATION_QUOTE_CHARACTER
 		})
 		.concat(builtin_values_to_replace.map(b => 
@@ -2041,20 +2111,28 @@ function Shrink(src, options) {
 			b.id + "=" + b.name
 		))
 		.join(",") + ";"
+		
+		declaration_string_safe += declaration_string
 	}
 	if (isGainOk_let) {
 		let undeclared_globals_declaration = "let " + undeclared_globals_to_replace_variable.map(b => 
 			b.id + "=" + b.name
 		)
 		.join(",") + ";"
+		let undeclared_globals_declaration_safe = "let " + undeclared_globals_to_replace_variable.map(b => 
+			b.id + "=" + `typeof ${b.name} !== ${_CONST_DECLARATION_QUOTE_CHARACTER}undefined${_CONST_DECLARATION_QUOTE_CHARACTER}?${b.name}:void 0`
+		)
+		.join(",") + ";"
 		declaration_string += undeclared_globals_declaration
+		declaration_string_safe += undeclared_globals_declaration_safe
 	}
 	
 	
-	// replace literals
-	var stringLiterals_nodesMap = new Map // node => tuple
+	
+	// replace literals -----------------------------------------------------------------------------
+	var stringLiterals_nodesMap = new Map // node => identifier
 	if (isGainOk_const) {
-		all_string_literals.forEach(t => t[1][0].forEach(n => stringLiterals_nodesMap.set(n, t))) // node => identifier
+		all_string_literals.forEach(t => t[1][0].forEach(n => stringLiterals_nodesMap.set(n, t)))
 	}
 	if (_TO_SHRINK_ALL_UNDECLARED_GLOBALS) {
 		var undeclared_globals_nodesMap = new Map // node => Binding
@@ -2063,7 +2141,7 @@ function Shrink(src, options) {
 		}
 	}
 	if (_TO_SHRINK_BUILTIN_VALUES) {
-		var builtin_values_nodesMap = new Map
+		var builtin_values_nodesMap = new Map // node => Binding
 		if (isGainOk_const) {
 			builtin_values_to_replace.forEach(b => b[2].forEach(n => builtin_values_nodesMap.set(n, b)))
 		}
@@ -2117,10 +2195,11 @@ function Shrink(src, options) {
 						if (!debugInfo.replacedPropertyNames.has(name)) {
 							debugInfo.replacedPropertyNames.add(name)
 						}
+						
 					}
 				}
 			}
-			else{ // literal
+			else{
 				var diff = name - id + 2
 				if(diff < 0 || diff == 0 && !_TO_REPLACE_ON_0_GAIN) return
 			}
@@ -2131,6 +2210,7 @@ function Shrink(src, options) {
 						debugInfo.replacedLiterals.add(name)
 					}
 				}
+				
 			}
 			
 			// Fixes: return"something"
@@ -2144,7 +2224,7 @@ function Shrink(src, options) {
 			
 			node.edit.update(id)
 		}
-		// Fix: "object.[A]" => "object[A]", but not object?.[A]
+		// Fix: "object.[A]" => "object[A]"
 		else if(node.type == "MemberExpression" && node.computed == false && !node.optional && stringLiterals_nodesMap.has(node.property)){
 			// remove "."
 			var curSrc = node.source()
@@ -2154,7 +2234,7 @@ function Shrink(src, options) {
 				node.edit.update(newSrc)
 			}
 		}
-		else if(_TO_SHRINK_ALL_UNDECLARED_GLOBALS && isGainOk_let && (undeclared_global_binding = undeclared_globals_nodesMap.get(node))){
+		else if(_TO_SHRINK_ALL_UNDECLARED_GLOBALS && (undeclared_global_binding = undeclared_globals_nodesMap.get(node))){
 			if (_DEBUG) {
 				debugInfo.replacedUndeclared.add(undeclared_global_binding.name)
 			}
@@ -2166,19 +2246,35 @@ function Shrink(src, options) {
 		else if(_TO_SHRINK_BUILTIN_VALUES && (builtin = builtin_values_nodesMap.get(node))){
 			node.edit.update(builtin[1])
 		}
-		else if(iife_wrapper_node && node === iife_wrapper_node){
+		else if(!declarationsMarker && iife_wrapper_node && node === iife_wrapper_node){
 			var blockWithConstDeclarations = "{" + declaration_string + node.source().slice(1)
 			node.edit.update(blockWithConstDeclarations)
 		}
 	})
 	var resultCode = result.toString()
 	
-	if (!iife_wrapper_node) {
+	if (declarationsMarker) {
+		let optionalNewline = declarationsMarker[0][declarationsMarker[0].length-1] === "\n"? "\n" : ""
+		resultCode = resultCode.replace(reg_declarationsMarker, declaration_string + optionalNewline)
+	}
+	else if (!iife_wrapper_node) {
 		resultCode = declaration_string + resultCode
 	}
 	
+	// check for ADD_DECLARATIONS string marker for adding the declarations in a string (for when worker code is built for example)
+	if(declaration_string){
+		declaration_string = declaration_string.replaceAll("\\", "\\\\")
+		declaration_string = declaration_string.replaceAll(_CONST_DECLARATION_QUOTE_CHARACTER, "\\"+_CONST_DECLARATION_QUOTE_CHARACTER)
+		declaration_string_safe = declaration_string_safe.replaceAll("\\", "\\\\")
+		declaration_string_safe = declaration_string_safe.replaceAll(_CONST_DECLARATION_QUOTE_CHARACTER, "\\"+_CONST_DECLARATION_QUOTE_CHARACTER)
+		let reg_ADD_DECLARATIONS_MARKER = new RegExp(`["'\`]?${ADD_DECLARATIONS_MARKER}["'\`]?`, "g")
+		let reg_ADD_DECLARATIONS_MARKER_SAFE = new RegExp(`["'\`]?${ADD_DECLARATIONS_MARKER_SAFE}["'\`]?`, "g")
+		resultCode = resultCode.replace(reg_ADD_DECLARATIONS_MARKER, declaration_string)
+		resultCode = resultCode.replace(reg_ADD_DECLARATIONS_MARKER_SAFE, declaration_string_safe)
+	}
+	
 	if(_DEBUG) {
-		let realGain = src.length - resultCode.length
+		var realGain = src.length - resultCode.length
 		var totalGain = src_start_Length - resultCode.length
 		console.log({
 			shrinkGain_real: realGain,
