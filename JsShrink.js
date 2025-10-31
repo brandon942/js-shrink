@@ -3,12 +3,6 @@
 
 
 
-
-
-
-
-
-
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -1769,6 +1763,21 @@ function isBindingInExcludedArea(binding, excludeNodes, _NOSHRINK_GLOBALS) {
 	}
 	return !binding.references.size
 }
+function getExcludeRanges(src, ast) {
+	var ranges = []
+	var funcNodes = new Set
+	walk(ast, node=>{
+		if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+			var hasMarker = src.slice(node.start - (EXCLUDE_FUNCTION_FROM_SHRINK_MARKER.length+13), node.start).includes(EXCLUDE_FUNCTION_FROM_SHRINK_MARKER)
+			if (hasMarker) {
+				ranges.push([node.start, node.end])
+				funcNodes.add(node)
+				return "jump"
+			}
+		}
+	})
+	return [ranges, funcNodes]
+}
 
 
 /** 
@@ -1781,8 +1790,8 @@ function isBindingInExcludedArea(binding, excludeNodes, _NOSHRINK_GLOBALS) {
  * @property {any} [values=true] - shrink null, undefined, Infinity
  * @property {any} [this=true] - shrink all "this."
  * @property {any} [classObjects=false] - to inline class-object properties and to remove unused properties (see below)
- * @property {any} [allow0Gain=false] - whether to replace even if the character difference is 0
- * @property {"`"|'"'|"'"} [quote="`"] - the quote character to use. Default ` because it is least likely to require escapes
+ * @property {any} [allow0Gain=false] - whether to replace a string/property even if the character difference is 0
+ * @property {"`"|'"'|"'"} [quote="`"] - the quote character to use. Default `
  * @property {string[]} [globalsToNotShrink=[]] - undeclared globals which are to be excluded
  * @property {number} [minPropertyNameLength=3] - property names below this length are not shrunk
  * @property {SourceMapOptions?} [sourceMap] - source map options if a source map is to be generated
