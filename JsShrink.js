@@ -4,6 +4,11 @@
 
 
 
+
+
+
+
+
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -19,17 +24,20 @@ const TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED = 0
 // comment markers
 const CLASS_OBJECT_MARKER = "CLASS_OBJECT"
 const EXCLUDE_FUNCTION_FROM_SHRINK_MARKER = "!EXCLUDE!"
-const DECLARATIONS_HERE_MARKER = "!!!_DECLARATIONS_HERE_!!!"
+const DECLARATIONS_HERE_MARKER = "__JSSHRINK_DECLARATIONS_HERE__"
 // string markers
-const ADD_DECLARATIONS_MARKER = "!!! ADD_DECLARATIONS !!!" // this marker is expected in a string. It is replaced with the generated declaration for all shrunk property names and global objects
-const ADD_DECLARATIONS_MARKER_SAFE = "!!! ADD_DECLARATIONS_SAFE !!!" // like $$$ADD_DECLARATIONS but global objects are existence-checked via `typeof name !== "undefined"`
+const ADD_DECLARATIONS_MARKER = "!!! ADD_DECLARATIONS !!!" // this marker is expected in a string. It is replaced with the generated declarations for shrunk property names and global objects
+const ADD_DECLARATIONS_MARKER_SAFE = "!!! ADD_DECLARATIONS_SAFE !!!" // like ADD_DECLARATIONS_MARKER but global objects are existence-checked: `typeof name !== "undefined"`
 
 
 
 
-var acorn = require("acorn");
-var scan = require('./scope-analyzer')
-var transform = require('transform-ast');
+const acorn = require("acorn");
+const scan = require('./scope-analyzer')
+const {astTransformMS} = require("./transform-ast");
+const convertSourceMap = require('convert-source-map')
+/** @import { SourceMap } from 'magic-string' */
+
 const keywords = new Set(
 	["abstract", "arguments", "await", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue", "debugger", "default", 
 	"delete", "do", "double", "else", "enum", "eval", "export", "extends", "false", "final", "finally", "float", "for", "function", "goto", "if", 
@@ -81,7 +89,7 @@ function getAllTakenNamesFor(ast_nodes) {
 	// gets all variable names (as string) declared in each scope (and parent scopes) and merges them
 	var scopes = new Set
 	for (const node of ast_nodes) {
-		var scope = scan.scope(node) || scan.scope(scan.nearestScope(node, true)) || scan.scope(scan.nearestScope(node))
+		var scope = scan.scope(node) || scan.nearestScope(node, true) || scan.nearestScope(node)
 		scopes.add(scope)
 		var p = scope
 		while (p = p.parent) {
@@ -435,16 +443,10 @@ function walk(ast_node, cb, cbLeave, inExecutionOrder) {
 					}
 				}
 				else if (node.type == "MemberExpression") {
-					let mem = node
-					while(mem.object.type == "MemberExpression") mem = mem.object
-					ret = _walk(node.object, node)
-					if(ret === "end") return "end"
-					while (true) {
-						ret = _walk(node.property, node)
-						if(ret === "end") return "end"
-						if(mem == node) break
-						mem = mem.parent
-					}
+					ret = _walk(node.object, node);
+					if (ret === "end") return "end";
+					ret = _walk(node.property, node);
+					if (ret === "end") return "end";
 				}
 				else if (node.type == "CallExpression") {
 					ret = _walk(node.callee, node)
@@ -588,7 +590,7 @@ function isVariableAssignedTo(binding, except) {
 		) return true
 	}
 }
-function transform_addSemicolIfNeeded(node) {
+function transform_addSemicolIfNeeded(node, ctx) {
 	var block
 	var statement = node
 	while (block = statement.parent) {
@@ -608,7 +610,7 @@ function transform_addSemicolIfNeeded(node) {
 		let nu, no
 		while (!char) {
 			nu = block.body[iu++]
-			char = nu.source()[0]
+			char = ctx? ctx.source(nu)[0] : nu.source()[0]
 			if(iu >= block.body.length) return 
 		}
 		
@@ -616,11 +618,18 @@ function transform_addSemicolIfNeeded(node) {
 			let char2, src2
 			do {
 				no = block.body[io]
-				src2 = no.source()
+				src2 = ctx? ctx.source(no) : no.source()
 			} while (--io >= 0 && !src2.length);
 			if(io < 0) return
 			char2 = src2[src2.length-1]
-			if(char2 != ";") no.edit.append(";")
+			if(char2 != ";"){
+				if (ctx) {
+					ctx.append(";", no)
+				}
+				else {
+					no.edit.append(";")
+				}
+			}
 		}
 	}
 }
@@ -827,7 +836,7 @@ function getFunctionInfo(functionNode, refCallExpressionNode, variableNamesChang
 	}
 	return type
 }
-function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNode) {
+function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNode, ctx) {
 	if (functionInfo.toCreateBlock) {
 		walk(functionNode, n =>{
 			if (n != functionNode && isFunctionNode(n)) {
@@ -840,10 +849,10 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 					if(d.id.type !== "Identifier") hasComplicated = 1
 					d.init && assignmentDeclarators.push(d)
 				})
-				let assignmentStatementsSrc = assignmentDeclarators.map(d=>d.source()).join(",")
+				let assignmentStatementsSrc = assignmentDeclarators.map(d=>ctx.source(d)).join(",")
 				if(hasComplicated && assignmentDeclarators.length == 1) assignmentStatementsSrc = "0,"+assignmentStatementsSrc
 				if(assignmentStatementsSrc) assignmentStatementsSrc += ";"
-				n.edit.update(assignmentStatementsSrc)
+				ctx.update(assignmentStatementsSrc, n)
 			}
 		})
 	}
@@ -868,12 +877,12 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 						replacementArgSrc = arg
 					}
 					else{
-						replacementArgSrc = arg.source()
+						replacementArgSrc = ctx.source(arg)
 						if (!ToNotWrapExpressionInRoundParantheses(arg, paramRefNode)) {
 							replacementArgSrc = "("+replacementArgSrc+")"
 						}
 					}
-					paramRefNode.edit.update(replacementArgSrc)
+					ctx.update(replacementArgSrc, paramRefNode)
 				}
 			}
 		}
@@ -889,25 +898,25 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 		if (lastReturnNode) {
 			let returnSrc
 			if(isCallSiteAStatement && lastReturnNode.argument.type == "Literal") returnSrc = ""
-			else returnSrc = lastReturnNode.argument.source()
+			else returnSrc = ctx.source(lastReturnNode.argument)
 			if (functionInfo.toPrependForAssignment) {
-				returnSrc = assignmentLeftNode.source() + "=" + returnSrc
+				returnSrc = ctx.source(assignmentLeftNode) + "=" + returnSrc
 			}
 			else if (functionInfo.toPrependForExpression) {
 				returnSrc = functionInfo.toPrependForExpression.returnVarName + "=" + returnSrc
 			}
-			lastReturnNode.edit.update(returnSrc)
+			ctx.update(returnSrc, lastReturnNode)
 		}
 		else{
 			if(functionInfo.toPrependForAssignment){
 				let lastBodyNode = bodyBlockNodes[bodyBlockNodes.length-1]
-				lastBodyNode.append(";"+assignmentLeftNode.source() + "=void 0")
+				ctx.append(";"+ctx.source(assignmentLeftNode) + "=void 0", lastBodyNode)
 			}
 		}
 		let toConvertBlockIntoExpression = !functionInfo.toCreateBlock && functionInfo.isOriginallyABlock
 		if(toConvertBlockIntoExpression){
 			let newBodyParts = bodyBlockNodes.map(bn => {
-				var bns = bn.source()
+				var bns = ctx.source(bn)
 				if(bns[bns.length-1] == ";") bns = bns.slice(0, bns.length-1)
 				return bns
 			})
@@ -922,10 +931,9 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 			if (isCallSiteAStatement) {
 				newBodySrc = newBodySrc+";"
 			}
-			fBody.edit.update(newBodySrc)
+			ctx.update(newBodySrc, fBody)
 		}
 		else{
-			// hoist declared functions
 			if (node._funDeclarations && node._funDeclarations.size) {
 				var scopeFDs = new Map
 				for (const d of node._funDeclarations) {
@@ -938,7 +946,7 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 						block = fscope.n.body
 					}
 					else throw "BlockStatement expected"
-					let funcSrc = d.source()
+					let funcSrc = ctx.source(d)
 					let name = d.id._rn || d.id.name
 					funcSrc = funcSrc.replace(/^\s*function\s+[\w_\$]+/, "function")
 					let src = name + "=" + funcSrc
@@ -952,21 +960,22 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 				}
 				for (const [scope, [block, assignments]] of scopeFDs) {
 					let src = assignments.join(",")+";"
-					block.body[0].prepend(src)
+					ctx.prepend(src, block.body[0])
 				}
 				for (const d of node._funDeclarations) {
-					d.edit.update("")
+					ctx.update("", d)
 				}
 			}
 			
 		}
 	}
 	else if(!ToNotWrapExpressionInRoundParantheses(fBody)){
-		fBody.edit.update("("+fBody.source()+")")
+		ctx.update("("+ctx.source(fBody)+")", fBody)
 	}
-	node._fBodySrc = fBody.source()
+	node._fBodySrc = ctx.source(fBody)
+	
 }
-function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode) {
+function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode, ctx) {
 	var node = refCallExpressionNode
 	var fBodySrc = functionNode._fBodySrc
 	var toCreateBlock = functionInfo.toCreateBlock
@@ -981,7 +990,7 @@ function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode) {
 		for (const [, b] of funcScopeBindings) {
 			let name = b.definition._rn || b.name
 			if(paramsMap.has(b.name) && paramsMap.get(b.name)){
-				lets.push(name + "=" + paramsMap.get(b.name).source())
+				lets.push(name + "=" + ctx.source(paramsMap.get(b.name)))
 			}
 			else{
 				lets.push(name)
@@ -1002,7 +1011,7 @@ function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode) {
 		
 		if (functionInfo.toPrependForAssignment) {
 			if (functionInfo.isCallSiteAnAssignmentExpression) {
-				editSrc = inlSrc
+				editSrc = inlSrc 
 			} 
 			else if(functionInfo.isCallSiteAVariableDeclarator){
 				let varDeclaratorNode = refCallExpressionNode.parent
@@ -1038,8 +1047,8 @@ function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode) {
 	}
 	
 	if (editSrc) {
-		node.edit.update(editSrc)
-		transform_addSemicolIfNeeded(node)
+		ctx.update(editSrc, node)
+		transform_addSemicolIfNeeded(node, ctx)
 	}
 	
 	return {
@@ -1119,14 +1128,21 @@ function hasCallsBetween(rootNode, startNode, endNode, toCheckStartNodeToo, toCh
 	return has
 }
 function inlineClassObjectProperties(src, options) {
-	const variableNamesChangable = options && "variableNamesChangable" in options? options.variableNamesChangable : false
+	const variableNamesChangeable = options && "variableNamesChangeable" in options? options.variableNamesChangeable : false
 	const infoObject = options && "infoObject" in options? options.infoObject : null
+	const withSourceMap = options && "withSourceMap" in options? options.withSourceMap : false
+	let inputMap = options?.map
 	
 	function _inline() {
+		
+		
 		var ast = acorn.parse(src, {
 			ecmaVersion: "latest",
+			// sourceType: "module",
 		})
 		scan.crawl(ast)
+		
+		
 		
 		function findClassObject() {
 			function hasMarker(ObjectExpressionNode) {
@@ -1157,8 +1173,8 @@ function inlineClassObjectProperties(src, options) {
 		
 		var allProps = new Map
 		var unusedProps
-		
 		function getPropsAndFilterUnsuitables() {
+			
 			function filterIfAccessedOnUnknownObjectsAndGetRefs() {
 				function isThisConnected(refsite) {
 					var isConnected = false
@@ -1213,9 +1229,9 @@ function inlineClassObjectProperties(src, options) {
 						return
 					}
 					
-					node = node.parent // MemberExpression
+					node = node.parent
 					
-					var notOK = (node.start < cObj.start || node.start > cObj.end) // property is used outside the object
+					var notOK = (node.start < cObj.start || node.start > cObj.end)
 								|| node.object.type != "ThisExpression"
 								|| !isThisConnected(node)
 								|| isAssignedTo(node)
@@ -1244,9 +1260,11 @@ function inlineClassObjectProperties(src, options) {
 					if(cObj._isClass){
 						if(propertyNode.kind == "constructor") continue
 						if(propertyNode.kind == "get" || propertyNode.kind == "set") continue
+						
 					}
 					else{
 						if (propertyNode.kind !== "init") continue
+						
 					}
 					if (propertyNode.key.type == "Identifier") {
 						var name = propertyNode.key.name
@@ -1258,7 +1276,7 @@ function inlineClassObjectProperties(src, options) {
 					if(!propertyNode.value) continue
 					if(hasExpressionCalls(propertyNode.value)) continue
 					allProps.set(name, propertyNode.value)
-					propertyNode.value._name = name
+					if(propertyNode.value) propertyNode.value._name = name
 				}
 			}
 			
@@ -1274,6 +1292,7 @@ function inlineClassObjectProperties(src, options) {
 						if (!node._uses && !node._unused && !node._forbidden) {
 							node._unused = 1
 							filtered = 1
+														
 							for (const [name2, node2] of allProps) {
 								for (const refNode of node2._refs) {
 									if (refNode.start >= node.start && refNode.start < node.end) {
@@ -1293,7 +1312,7 @@ function inlineClassObjectProperties(src, options) {
 			unusedProps = [...allProps].filter(([n,p])=>p._unused)
 			allProps.forEach((p, n) => p._unused && allProps.delete(n))
 			allProps.forEach((p, n) => p._forbidden && allProps.delete(n))
-			function filterProps() {
+			function filterByCriteria() {
 				allProps.forEach((propNode, name)=>{
 					var numRefs = propNode._refs && propNode._refs.size||0
 					var isIdentifier = propNode.type == "Identifier"
@@ -1317,8 +1336,9 @@ function inlineClassObjectProperties(src, options) {
 							var functionNode = propNode
 							if(functionNode.uses_arguments) return
 							
+							
 							let refCallExpression = [...propNode._refs][0].parent
-							var funcInfo = getFunctionInfo(propNode, refCallExpression, variableNamesChangable)
+							var funcInfo = getFunctionInfo(propNode, refCallExpression, variableNamesChangeable)
 							if (funcInfo) {
 								propNode._isMethod = true
 								propNode._funcInfo = funcInfo
@@ -1332,7 +1352,7 @@ function inlineClassObjectProperties(src, options) {
 					}
 				})
 			}
-			filterProps()
+			filterByCriteria()
 			function filterNonInlinables() {
 				function findOutsideRefs() {
 					for (const [name, propNode] of allProps) {
@@ -1341,12 +1361,14 @@ function inlineClassObjectProperties(src, options) {
 						do {
 							for (const [,b] of aScope.bindings) {
 								var refs = getRefsInScope(b.references, propNode)
-								if (refs) propNode._outsideRefs.set(b.name, [b, refs])
+								if (refs) {
+									propNode._outsideRefs.set(b.name, [b, refs])
+								}
 							}
 						} while (aScope = aScope.parent);
 					}
 				}
-				function isInlinedToWithOutsideRefs_orMethodNotReady(propNode) {
+				function isInlinedToWithOutsideRefs_orMethodUnfinished(propNode) {
 					let isVar = !propNode._isMethod
 					for (const [name, otherInlinedPropNode] of allProps) {
 						if(isVar && !otherInlinedPropNode._outsideRefs.size) continue
@@ -1415,8 +1437,9 @@ function inlineClassObjectProperties(src, options) {
 						allProps.delete(name) 
 					}
 				})
+				
 				allProps.forEach((propNode, name)=>{
-					if (isInlinedToWithOutsideRefs_orMethodNotReady(propNode)) {
+					if (isInlinedToWithOutsideRefs_orMethodUnfinished(propNode)) {
 						++_num_Pending
 						allProps.delete(name)
 					}
@@ -1424,7 +1447,7 @@ function inlineClassObjectProperties(src, options) {
 				findCoveringBindings()
 			}
 			filterNonInlinables()	
-			if(!variableNamesChangable){
+			if(!variableNamesChangeable){
 				allProps.forEach((propNode, name)=>{
 					if (propNode._refs.some(r=>(r._covOutRefs && r._covOutRefs.length))) {
 						allProps.delete(name)
@@ -1459,7 +1482,11 @@ function inlineClassObjectProperties(src, options) {
 				})
 			}
 		}
-		getPropsAndFilterUnsuitables()
+		try {
+			getPropsAndFilterUnsuitables()
+		} catch (error) {
+			console.error(error)
+		}
 		if(!allProps.size && !unusedProps.length) return
 		
 		if (infoObject) {
@@ -1468,11 +1495,12 @@ function inlineClassObjectProperties(src, options) {
 		}
 		
 		function getTransformedSrc(){
-			var result = transform(src, {ast}, node =>{
+			var result = astTransformMS({src, ast, prevSourceMap:inputMap, parentChain:1, leave({update, node}){
 				if(node._rn){
-					node.edit.update(node._rn)
+					update(node._rn, node)
 				}
-			})
+			}})
+			var ctx = result.ctx
 			
 			function setInMovementInfo(node, inDepth=0) {
 				let had = node._refDepth != null
@@ -1519,7 +1547,7 @@ function inlineClassObjectProperties(src, options) {
 				setInMovementInfo(propNode)
 			}
 			
-			var all_edits = [] 
+			var all_edits = []
 			for (const [name, propNode] of allProps) {
 				for (const refNode of propNode._refs) {
 					if (propNode._isMethod) {
@@ -1534,15 +1562,17 @@ function inlineClassObjectProperties(src, options) {
 			var sortF = (a,b)=>a[2] - b[2]
 			all_edits.sort(sortF)
 			
+			
 			for (let i = 0; i < all_edits.length; i++) {
 				const edit = all_edits[i];
 				let [name, editType,,refNode, propNode] = edit
 				let _new = []
 				
+				
 				if (editType == "inl_F") {
 					let refCallExpressionNode = refNode.parent
-					editInlinedFunctionBody(propNode, propNode._funcInfo, refCallExpressionNode)
-					let info = inlineFunctionBody(propNode, propNode._funcInfo, refCallExpressionNode)
+					editInlinedFunctionBody(propNode, propNode._funcInfo, refCallExpressionNode, ctx)
+					let info = inlineFunctionBody(propNode, propNode._funcInfo, refCallExpressionNode, ctx)
 					if(propNode._funcInfo.toPrependForExpression){
 						_new.push(["prependFBE "+name, "prependFBE", sortKey(propNode._funcInfo.toPrependForExpression.targetStatement), [propNode._funcInfo.toPrependForExpression.targetStatement, refCallExpressionNode], propNode])
 					}
@@ -1553,7 +1583,8 @@ function inlineClassObjectProperties(src, options) {
 					}
 				}
 				else if (editType == "inl_V"){
-					let varSrc = propNode.source()
+						
+					let varSrc = ctx.source(propNode)
 					let isNumberUsedLikeObject
 					if (propNode.type == "Literal" && typeof propNode.value == "number" && refNode.parent.type == "MemberExpression") {
 						isNumberUsedLikeObject = 1
@@ -1562,12 +1593,14 @@ function inlineClassObjectProperties(src, options) {
 					if(!toNotWrapInRoundParantheses || isNumberUsedLikeObject){
 						varSrc = "("+varSrc+")"
 					}
+					
 					if (refNode.parent.type == "ExpressionStatement" && varSrc[0] == "(" && !isPreceededBy(refNode.parent, n=>n.type == "EmptyStatement")
 					) {
 						varSrc = ";"+varSrc
 					}
 					
-					refNode.edit.update(varSrc)
+					ctx.update(varSrc, refNode)
+					
 				}
 				else if (editType == "prependFBA") { 
 					let varDeclarationNode = refNode
@@ -1578,6 +1611,9 @@ function inlineClassObjectProperties(src, options) {
 						let varDeclaratorNode = varDeclarationNode.declarations[index];
 						let varName = varDeclaratorNode.id._rn || varDeclaratorNode.id.name
 						let toPrependFunc = varDeclaratorNode._inlinedFunc
+						if (DEBUG && toPrependFunc) {
+							toPrependFunc = "\n\n/* "+varDeclaratorNode._name+" INLINED SATRT: *\/;\n" + toPrependFunc +"\n /* "+varDeclaratorNode._name+" INLINED END *\/\n"
+						}
 						if (toPrependFunc) {
 							curChunk.push(varName)
 							chunks.push(curChunk)
@@ -1585,26 +1621,31 @@ function inlineClassObjectProperties(src, options) {
 							curChunk = []
 						}
 						else{
-							curChunk.push(varDeclaratorNode.source())
+							curChunk.push(ctx.source(varDeclaratorNode))
 							if(index == endIndex) chunks.push(curChunk)
 						}
+						
 					}
 					let txt = ""
 					chunks.forEach((c,i)=>{
 						txt += i%2? c : varDeclarationNode.kind+" "+c.join(",")+";"
 					})
-					varDeclarationNode.edit.update(txt)
-					transform_addSemicolIfNeeded(varDeclarationNode)
+					ctx.update(txt, varDeclarationNode)
+					transform_addSemicolIfNeeded(varDeclarationNode, ctx)
 				} 
 				else if (editType == "prependFBE") { 
 					let [statement, refCallExpressionNode] = refNode
 					let returnVarName = propNode._funcInfo.toPrependForExpression.returnVarName
 					let src = "let "+returnVarName+";"+statement._inlinedFunc
-					statement.prepend(src)
-					refCallExpressionNode.edit.update(returnVarName)
+					if (DEBUG) {
+						src = "\n\n/* "+propNode._name+" INLINED SATRT: *\/;\n" + src +"\n /* "+propNode._name+" INLINED END *\/\n"
+					}
+					ctx.prepend(src, statement)
+					ctx.update(returnVarName, refCallExpressionNode)
 				} 
 				
-				all_edits.splice(i--, 1)
+				all_edits.splice(i, 1)
+				--i
 				if(_new.length) {
 					all_edits.push(..._new)
 					all_edits.sort(sortF)
@@ -1619,18 +1660,29 @@ function inlineClassObjectProperties(src, options) {
 			
 			if (toRemoveProps.size) {
 				if (cObj._isClass) {
-					toRemoveProps.forEach(p => p.edit.update(""))
+					toRemoveProps.forEach(p => ctx.update("", p))
 				} else {
 					let isFormatted = /\s/.test(src[cObj.start+1])		
 					let delim = ","
 					if(isFormatted) delim += "\n"
-					cObj.edit.update( "{"+ cObj.properties.filter(p => !toRemoveProps.has(p)).map(p=>p.source()).join(delim) +"}" )
+					ctx.update( "{"+ cObj.properties.filter(p => !toRemoveProps.has(p)).map(p=>ctx.source(p)).join(delim) +"}", cObj)
 				}
 			}
-			return result.toString()
+			var resultCode = result.toString()
+			if (withSourceMap) {
+				inputMap = result.map
+				options.map = inputMap
+			}
+			return resultCode
+		}
+		try {
+			var transformed = getTransformedSrc()
+		} catch (error) {
+			console.error(error)
 		}
 		
-		return getTransformedSrc()
+		
+		return transformed
 	}
 	
 	var _offset = 0
@@ -1638,7 +1690,11 @@ function inlineClassObjectProperties(src, options) {
 	while (1) {
 		var _num_Pending = 0
 		var _object_found = 0 
-		var src2 = _inline()
+		try {
+			var src2 = _inline()
+		} catch (err) {
+			console.error(err);
+		}
 		if(src2){
 			src = src2
 			++_changes
@@ -1653,7 +1709,6 @@ function inlineClassObjectProperties(src, options) {
 			}
 		}
 	}
-	
 	return _changes && src
 }
 function sortScopeBindingsByPositionInCode(scope) {
@@ -1715,6 +1770,37 @@ function isBindingInExcludedArea(binding, excludeNodes, _NOSHRINK_GLOBALS) {
 	return !binding.references.size
 }
 
+
+/** 
+ * @typedef {Object} Options
+ * @property {any} [all=false] - applies all shrinking options
+ * @property {any} [literals=true] - shrink string literals
+ * @property {any} [properties=true] - shrink all property names
+ * @property {any} [variables=true] - shrink all variables names
+ * @property {any} [undeclared=true] - shrink all undeclared globals
+ * @property {any} [values=true] - shrink null, undefined, Infinity
+ * @property {any} [this=true] - shrink all "this."
+ * @property {any} [classObjects=false] - to inline class-object properties and to remove unused properties (see below)
+ * @property {any} [allow0Gain=false] - whether to replace even if the character difference is 0
+ * @property {"`"|'"'|"'"} [quote="`"] - the quote character to use. Default ` because it is least likely to require escapes
+ * @property {string[]} [globalsToNotShrink=[]] - undeclared globals which are to be excluded
+ * @property {number} [minPropertyNameLength=3] - property names below this length are not shrunk
+ * @property {SourceMapOptions?} [sourceMap] - source map options if a source map is to be generated
+ * @property {any} [debug=false] - prints some debug information
+*/
+/** 
+ * @typedef {Object} SourceMapOptions
+ * @property {any} [generateSourceMapObject=false] - whether to generate a source map object; it is written to the "options.sourceMap.map" property
+ * @property {any} [generateSourceMapInline=false] - whether to generate and add an inline source map comment to the output
+ * @property {SourceMap?} [map] - a prior source map object; this key will hold the new source map object if generateSourceMapObject is truthy
+ * @property {string?} [fileName] - filename of the output script file; this is only used to set the "file" property of the source map object
+ * @property {string?} [sourceMapUrl] - url of the source map file; if specified then a '//# sourceMappingURL=' comment is appended to the output
+*/
+/** 
+ * @param {string} src - source code 
+ * @param {Options} options 
+ * @returns {string}
+ */
 function Shrink(src, options) {
 	const _TO_SHRINK_ALL = options && "all" in options? options.all : false
 	const _TO_SHRINK_ALL_STRING_LITERALS = _TO_SHRINK_ALL || (options && "literals" in options? options.literals : TO_SHRINK_ALL_STRING_LITERALS)
@@ -1735,6 +1821,19 @@ function Shrink(src, options) {
 	
 	
 	var src_start_Length = src.length
+	var srcInit = src
+	var inputMap, inputMapInit
+	const _TO_GENERATE_SOURCEMAP_OBJECT = options?.sourceMap?.generateSourceMapObject
+	const _TO_GENERATE_SOURCEMAP_INLINE = options?.sourceMap?.generateSourceMapInline
+	const _TO_GENERATE_SOURCEMAP = _TO_GENERATE_SOURCEMAP_OBJECT || _TO_GENERATE_SOURCEMAP_INLINE 
+	const _INPUT_SOURCEMAP = options?.sourceMap?.map
+	const _SOURCEMAP_FILENAME = typeof options?.sourceMap?.fileName === "string" && options.sourceMap.fileName
+	const _SOURCEMAP_URL = typeof options?.sourceMap?.sourceMapUrl === "string" && options.sourceMap.sourceMapUrl
+	if (_TO_GENERATE_SOURCEMAP) {
+		inputMap = _INPUT_SOURCEMAP || convertSourceMap.fromSource(src)?.toObject();
+		inputMapInit = inputMap
+		src = convertSourceMap.removeComments(src);
+	}
 	
 	// inlining ----------------------------------------------------------------------------------------------------------------------------------------------------------
 	var numInlinedItems = 0
@@ -1744,15 +1843,19 @@ function Shrink(src, options) {
 	var allInlinedClassPrperties = options && "inlinedClassPropsAllPre" in options && options.inlinedClassPropsAllPre instanceof Array? options.inlinedClassPropsAllPre : []
 	if (_TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED) {
 		let info = {}
-		let src2 = inlineClassObjectProperties(src, {
-			variableNamesChangable: _TO_SHRINK_ALL_VARIABLES,
+		let options = {
+			variableNamesChangeable: _TO_SHRINK_ALL_VARIABLES,
 			infoObject: info,
-		})
+			withSourceMap: _TO_GENERATE_SOURCEMAP,
+			map: inputMap,
+		}
+		let src2 = inlineClassObjectProperties(src, options)
 		if (src2) {
 			src = src2
 			numInlinedClassPrperties += info.inlined
 			if(info.inlinedProps instanceof Array) allInlinedClassPrperties = allInlinedClassPrperties.concat(info.inlinedProps)
 			numInlinedItems += numInlinedClassPrperties
+			if (_TO_GENERATE_SOURCEMAP) inputMap = options.map
 		}
 	}
 	
@@ -1760,7 +1863,7 @@ function Shrink(src, options) {
 	var estimated_this_Gain = 0, numThisReplaced = 0
 	if (_TO_SHRINK_ALL_THIS && _TO_SHRINK_ALL_VARIABLES) {
 		function shrinkAllThis() {
-			var allThis = [] 
+			var allThis = []
 			function getAllThisInThisObject(rootNode) {
 				var tuple
 				walk(rootNode, n=>{
@@ -1786,9 +1889,9 @@ function Shrink(src, options) {
 			var changes = 0
 			var numThisReplaced = 0
 			var estimatedSumGain = 0
-			var transformed = transform(src, {ast})
+			var transformed = astTransformMS({src, ast, prevSourceMap:inputMap })
+			var ctx = transformed.ctx
 			allThis.forEach(t => {
-				// assume id length = 2
 				var len = t[1].length
 				var gain = len*4 - (len*2+12)
 				var gainOk = _TO_REPLACE_ON_0_GAIN? gain >= 0 : gain > 0
@@ -1798,8 +1901,8 @@ function Shrink(src, options) {
 				if(!(root.body && root.body instanceof Array && root.body.length)) throw "root body expected"
 				var id = gimmeSomethingUnique()
 				if(DEBUG) id = "this_"+changes+"_"
-				t[1].forEach(n => n.edit.update(id))
-				root.body[0].prepend("var "+id+"=this;"+(DEBUG?"\n":""))
+				t[1].forEach(n => ctx.update(id, n))
+				ctx.prepend("var "+id+"=this;"+(DEBUG?"\n":""), root.body[0])
 				++changes
 				numThisReplaced += t[1].length
 				estimatedSumGain += gain
@@ -1807,6 +1910,9 @@ function Shrink(src, options) {
 			if(!changes) return 
 			var src2 = transformed.toString()
 			src = src2
+			if (_TO_GENERATE_SOURCEMAP){
+				inputMap = transformed.map
+			}
 			return [estimatedSumGain, numThisReplaced]
 		}
 		estimated_this_Gain = shrinkAllThis() || 0
@@ -1819,8 +1925,7 @@ function Shrink(src, options) {
 		ecmaVersion: "latest",
 		// sourceType: "module",
 	})
-	scan.crawl(ast)
-	
+	scan.crawl(ast) 
 	var rootScope = scan.scope(ast)
 	
 	
@@ -1833,14 +1938,12 @@ function Shrink(src, options) {
 		}
 	}
 	
-	
-	
 	sortScopeBindingsByPositionInCode(rootScope)
 	
 	
 	
 	var stringLiterals = findAllStringLiterals(ast, _TO_SHRINK_ALL_PROPERTY_NAMES, _MIN_PROPERTY_NAME_LENGTH, excludeNodes)
-	var all_string_literals = [...stringLiterals]
+	var all_string_literals = [...stringLiterals] 
 		.filter(([str, tuple]) => {
 			var nodes = tuple[0]
 			
@@ -1859,7 +1962,6 @@ function Shrink(src, options) {
 	
 	
 	// get available identifiers for each literal -----------------------------------------------------------------------------
-	// [type, occurrences, object]
 	var items_literals=[], items_builtins=[], items_undeclared=[]
 	if(_TO_SHRINK_ALL_STRING_LITERALS) items_literals = all_string_literals.map(t => ["s", t[1][0].length, t])
 	if(_TO_SHRINK_ALL_UNDECLARED_GLOBALS){
@@ -1868,7 +1970,7 @@ function Shrink(src, options) {
 			.filter(b => b.references.size > 1 && b.name.length >= 3) // at least 2 occurrences and at least 3 characters long
 			.filter(b => !isBindingExistenceChecked(b))
 		if (excludeNodes || _NOSHRINK_GLOBALS.length) {
-			items_undeclared = items_undeclared.filter(b => !isBindingInExcludedArea(b, excludeNodes, _NOSHRINK_GLOBALS)) // ignore excluded areas
+			items_undeclared = items_undeclared.filter(b => !isBindingInExcludedArea(b, excludeNodes, _NOSHRINK_GLOBALS))
 		}
 		items_undeclared = items_undeclared.map(binding => {
 				var maxIdentifierLength = maxIdentifierLengthFor(binding.references.size, binding.name.length, _TO_REPLACE_ON_0_GAIN)
@@ -1917,21 +2019,21 @@ function Shrink(src, options) {
 					orig[2][2] = conv[0]
 				}
 				else if(orig[0] == "u"){
-					if (conv[0]) { 
+					if (conv[0]) {
 						orig[2].id = conv[0] 
 						undeclared_globals_to_replace.push(orig[2])
 					}
 				}
 				else if(orig[0] == "b"){
-					if (conv[0]) { 
+					if (conv[0]) {
 						builtin_values_to_replace.push([orig[4], conv[0], orig[2]]) // [name, id, nodes]
 					}
 				}
 			}
+			
 		}
 		else{
 			let all_topLevel_variable_names = getAllScopeVariableNames(top_scope)
-			// only the root scope has all the undeclaredBindings
 			var all_undeclared_set =  new Set([...rootScope.undeclaredBindings].map(x=>x[0]))
 			let availableSkippedIdentifiers = new Set
 			let nameCounter = -1
@@ -1970,7 +2072,7 @@ function Shrink(src, options) {
 						undeclared_globals_to_replace.push(binding)
 					}
 					else if(isBuiltins){
-						builtin_values_to_replace.push([name, aname, occurrence_nodes]) // [name, id, nodes]
+						builtin_values_to_replace.push([name, aname, occurrence_nodes])
 					}
 				}
 				var takenNames = getAllTakenNamesFor(occurrence_nodes)
@@ -1988,13 +2090,13 @@ function Shrink(src, options) {
 				while (true) {
 					let aname = base54(++nameCounter)
 					if(keywords.has(aname)) continue
-					if (all_undeclared_set.has(aname)) { // disallowed
+					if (all_undeclared_set.has(aname)) {
 						continue
 					}
 					if(all_topLevel_variable_names.has(aname)){ // the toplevel scope variables are disallowed for everybody
 						continue
 					}
-					if(takenNames.has(aname)){ // disallowed
+					if(takenNames.has(aname)){
 						availableSkippedIdentifiers.add(aname)
 						continue
 					}
@@ -2056,7 +2158,6 @@ function Shrink(src, options) {
 		break
 	}
 	
-	// filter out those without a suitable identifier name
 	all_string_literals = all_string_literals.filter(t => t[2] != null)
 	all_string_literals.forEach(t => t[5] = getCharacterGain(t[0].length, t[2].length, t[1][1], t[1][2], t[1][3], t[1][4]))
 	if (!_TO_REPLACE_ON_0_GAIN) {
@@ -2152,116 +2253,130 @@ function Shrink(src, options) {
 		replacedLiterals: new Set,
 		replacedUndeclared: new Set,
 	}
-	// replace
-	var result = transform(src, {ast}, node =>{
-		var undeclared_global_binding
-		var builtin
-		var l_tuple
-		if (l_tuple = stringLiterals_nodesMap.get(node)) {
-			var id = l_tuple[2]
-			var name = l_tuple[0]
-			var isIdentifier = node.type == "Identifier"
-			if (_TO_SHRINK_ALL_PROPERTY_NAMES) {
-				var needsPropertyKeyBrackets = false
-				let isObjectKey = node.parent.type == "Property" && node.parent.key == node
-				let isPropertyMemberKey = node.parent.type == "MemberExpression" && node.parent.property == node
-				var isPropertyKey = isObjectKey || isPropertyMemberKey
+	var result = astTransformMS({src, ast, parentChain:1, prevSourceMap:inputMap, leave({update, source, node}){
+			var undeclared_global_binding
+			var builtin
+			var l_tuple
+			if (l_tuple = stringLiterals_nodesMap.get(node)) {
+				var id = l_tuple[2]
+				var name = l_tuple[0]
+				var isIdentifier = node.type == "Identifier"
+				if (_TO_SHRINK_ALL_PROPERTY_NAMES) {
+					var needsPropertyKeyBrackets = false
+					let isObjectKey = node.parent.type == "Property" && node.parent.key == node
+					let isPropertyMemberKey = node.parent.type == "MemberExpression" && node.parent.property == node
+					var isPropertyKey = isObjectKey || isPropertyMemberKey
 
-				if (isPropertyKey) {
-					var isComputed = node.parent.computed
-					if (!isComputed) {
-						needsPropertyKeyBrackets = true
-					}
-					
-					if(isComputed){ // can only be a literal
-						caseDelta = -2
-					}
-					else if (isIdentifier) {
-						caseDelta = isObjectKey ? 2 : 1
-					}
-					else{
-						caseDelta = 0
-					}
-					
-					var diff = name - id - caseDelta
-					if(diff < 0 || diff == 0 && !_TO_REPLACE_ON_0_GAIN) return
-					
-					if (needsPropertyKeyBrackets) {
-						id = "["+id+"]"
-					}
-					
-					
-					if (_DEBUG) {
-						if (!debugInfo.replacedPropertyNames.has(name)) {
-							debugInfo.replacedPropertyNames.add(name)
+					if (isPropertyKey) {
+						var isComputed = node.parent.computed
+						if (!isComputed) {
+							needsPropertyKeyBrackets = true
 						}
 						
+						if(isComputed){
+							caseDelta = -2
+						}
+						else if (isIdentifier) {
+							caseDelta = isObjectKey ? 2 : 1
+						}
+						else{
+							caseDelta = 0
+						}
+						
+						var diff = name - id - caseDelta
+						if(diff < 0 || diff == 0 && !_TO_REPLACE_ON_0_GAIN) return
+						
+						if (needsPropertyKeyBrackets) {
+							id = "["+id+"]"
+							// // Fix: shorthand: {prop}
+							if (!_TO_SHRINK_ALL_VARIABLES) {
+								if (isObjectKey &&  node.parent.value.type === "Identifier" && node.parent.value.start === node.start) {
+									return
+								}
+							}
+						}
+						
+						
+						if (_DEBUG) {
+							if (!debugInfo.replacedPropertyNames.has(name)) {
+								debugInfo.replacedPropertyNames.add(name)
+							}
+							
+						}
 					}
 				}
-			}
-			else{
-				var diff = name - id + 2
-				if(diff < 0 || diff == 0 && !_TO_REPLACE_ON_0_GAIN) return
-			}
-			
-			if (_DEBUG) {
-				if (!isPropertyKey) {
-					if (!debugInfo.replacedLiterals.has(name)) {
-						debugInfo.replacedLiterals.add(name)
-					}
+				else{ // literal
+					var diff = name - id + 2
+					if(diff < 0 || diff == 0 && !_TO_REPLACE_ON_0_GAIN) return
 				}
 				
+				if (_DEBUG) {
+					if (!isPropertyKey) {
+						if (!debugInfo.replacedLiterals.has(name)) {
+							debugInfo.replacedLiterals.add(name)
+						}
+					}
+					
+				}
+				
+				// Fixes: return"something"
+				if (isJsAlphanum(src[node.start-1])) {
+					id = " "+id
+				}
+				// Fixes: "something"in object1
+				if (isJsAlphanum(src[node.end])) {
+					id = id+" "
+				}
+				
+				update(id, node)
 			}
-			
-			// Fixes: return"something"
-			if (isJsAlphanum(src[node.start-1])) {
-				id = " "+id
+			// Fix: "object.[A]" => "object[A]"
+			else if(node.type == "MemberExpression" && node.computed == false && !node.optional && stringLiterals_nodesMap.has(node.property)){
+				// remove "."
+				var curSrc = source(node)
+				var i = curSrc.lastIndexOf(".")
+				if(i > 0){
+					var newSrc = curSrc.slice(0, i) + curSrc.slice(i+1)
+					update(newSrc, node)
+				}
 			}
-			// Fixes: "something"in object1
-			if (isJsAlphanum(src[node.end])) {
-				id = id+" "
+			else if(_TO_SHRINK_ALL_UNDECLARED_GLOBALS && (undeclared_global_binding = undeclared_globals_nodesMap.get(node))){
+				if (_DEBUG) {
+					debugInfo.replacedUndeclared.add(undeclared_global_binding.name)
+				}
+				update(undeclared_global_binding.id, node)
 			}
-			
-			node.edit.update(id)
-		}
-		// Fix: "object.[A]" => "object[A]"
-		else if(node.type == "MemberExpression" && node.computed == false && !node.optional && stringLiterals_nodesMap.has(node.property)){
-			// remove "."
-			var curSrc = node.source()
-			var i = curSrc.lastIndexOf(".")
-			if(i > 0){
-				var newSrc = curSrc.slice(0, i) + curSrc.slice(i+1)
-				node.edit.update(newSrc)
+			else if(_TO_SHRINK_ALL_VARIABLES && (node.type == "Identifier" && node._v)){
+				// Fix: destructuring shorthand: var {prop} = object
+				if (node.parent.type === "Property" && node.parent.value === node && node.parent.key.start === node.start) {
+					let propertySrc = source(node.parent.key)
+					if (propertySrc !== node._v) {
+						update(`${propertySrc}:${node._v}`, node)
+					}
+				}
+				else{
+					update(node._v, node)
+				}
 			}
-		}
-		else if(_TO_SHRINK_ALL_UNDECLARED_GLOBALS && (undeclared_global_binding = undeclared_globals_nodesMap.get(node))){
-			if (_DEBUG) {
-				debugInfo.replacedUndeclared.add(undeclared_global_binding.name)
+			else if(_TO_SHRINK_BUILTIN_VALUES && (builtin = builtin_values_nodesMap.get(node))){
+				update(builtin[1], node)
 			}
-			node.edit.update(undeclared_global_binding.id)
-		}
-		else if(_TO_SHRINK_ALL_VARIABLES && (node.type == "Identifier" && node._v)){
-			node.edit.update(node._v)
-		}
-		else if(_TO_SHRINK_BUILTIN_VALUES && (builtin = builtin_values_nodesMap.get(node))){
-			node.edit.update(builtin[1])
-		}
-		else if(!declarationsMarker && iife_wrapper_node && node === iife_wrapper_node){
-			var blockWithConstDeclarations = "{" + declaration_string + node.source().slice(1)
-			node.edit.update(blockWithConstDeclarations)
+			else if(!declarationsMarker && iife_wrapper_node && node === iife_wrapper_node){
+				var blockWithConstDeclarations = "{" + declaration_string + source(node).slice(1)
+				update(blockWithConstDeclarations, node)
+			}
 		}
 	})
-	var resultCode = result.toString()
 	
 	if (declarationsMarker) {
 		let optionalNewline = declarationsMarker[0][declarationsMarker[0].length-1] === "\n"? "\n" : ""
-		resultCode = resultCode.replace(reg_declarationsMarker, declaration_string + optionalNewline)
+		result.replace(reg_declarationsMarker, declaration_string + optionalNewline)
 	}
 	else if (!iife_wrapper_node) {
-		resultCode = declaration_string + resultCode
+		result.prepend(declaration_string)
 	}
 	
-	// check for ADD_DECLARATIONS string marker for adding the declarations in a string (for when worker code is built for example)
+	// check for ADD_DECLARATIONS_MARKER for adding the declarations in a string (for when worker code is built for example)
 	if(declaration_string){
 		declaration_string = declaration_string.replaceAll("\\", "\\\\")
 		declaration_string = declaration_string.replaceAll(_CONST_DECLARATION_QUOTE_CHARACTER, "\\"+_CONST_DECLARATION_QUOTE_CHARACTER)
@@ -2269,31 +2384,50 @@ function Shrink(src, options) {
 		declaration_string_safe = declaration_string_safe.replaceAll(_CONST_DECLARATION_QUOTE_CHARACTER, "\\"+_CONST_DECLARATION_QUOTE_CHARACTER)
 		let reg_ADD_DECLARATIONS_MARKER = new RegExp(`["'\`]?${ADD_DECLARATIONS_MARKER}["'\`]?`, "g")
 		let reg_ADD_DECLARATIONS_MARKER_SAFE = new RegExp(`["'\`]?${ADD_DECLARATIONS_MARKER_SAFE}["'\`]?`, "g")
-		resultCode = resultCode.replace(reg_ADD_DECLARATIONS_MARKER, declaration_string)
-		resultCode = resultCode.replace(reg_ADD_DECLARATIONS_MARKER_SAFE, declaration_string_safe)
+		result.replace(reg_ADD_DECLARATIONS_MARKER, declaration_string)
+		result.replace(reg_ADD_DECLARATIONS_MARKER_SAFE, declaration_string_safe)
 	}
 	
+	
+	if (_SOURCEMAP_URL && !_TO_GENERATE_SOURCEMAP_INLINE && _TO_GENERATE_SOURCEMAP_OBJECT) {
+		result.append("\n//# sourceMappingURL="+_SOURCEMAP_URL)
+	}
+	var addSourceContentToSourceMap = !inputMapInit && _TO_GENERATE_SOURCEMAP_INLINE
+	var resultCode = result.toString(!!_TO_GENERATE_SOURCEMAP_INLINE, addSourceContentToSourceMap && [srcInit], _SOURCEMAP_FILENAME)
+	if (_TO_GENERATE_SOURCEMAP_OBJECT) {
+		options.map = result.map
+	}
+	
+	// debug
+	var realGain = src.length - resultCode.length
+	var totalGain = src_start_Length - resultCode.length
+	var debugInfo = {
+		shrinkGain_real: realGain,
+		shrinkGain_predicted: sumGain,
+		discr: realGain-sumGain,
+		totalGain,
+		literalsAndProps_Gain,
+		undeclared_globals_Gain,
+		all_variables_Gain,
+		estimated_this_Gain,
+		numThisReplaced,
+		numInlinedClassPrperties,
+		allInlinedClassPrperties,
+		debugInfo,
+		debug_insufficientGainFor,
+	}
+	if (options) options.debugInfo = debugInfo
 	if(_DEBUG) {
-		var realGain = src.length - resultCode.length
-		var totalGain = src_start_Length - resultCode.length
-		console.log({
-			shrinkGain_real: realGain,
-			shrinkGain_predicted: sumGain,
-			discr: realGain-sumGain,
-			totalGain,
-			literalsAndProps_Gain,
-			undeclared_globals_Gain,
-			all_variables_Gain,
-			estimated_this_Gain,
-			numThisReplaced,
-			numInlinedClassPrperties,
-			allInlinedClassPrperties,
-			debugInfo,
-			debug_insufficientGainFor,
-		});
+		console.log(debugInfo);
 	}
 	return resultCode
 }
 module.exports = Shrink 
 Shrink.inlineClassObjectProperties = inlineClassObjectProperties
+
+
+
+
+
+
 
