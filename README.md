@@ -25,9 +25,9 @@ var out_code = shrink(in_code, {
 	sourceMap: { // source map options if a source map is to be generated
 		generateSourceMapObject: false, // whether to generate a source map object; it is written to the "options.sourceMap.map" property
 		generateSourceMapInline: false, // whether to generate and add an inline source map comment to the output
-		map: false, // a prior source map object; this key will hold the new source map object if generateSourceMapObject is truthy
-		fileName: false, // filename of the script file; this is only used to set the "file" property of the source map object
-		sourceMapUrl: false, // url of the source map file; if specified then a '//# sourceMappingURL=' comment is appended to the output
+		map: null, // a prior source map object; this key will hold the new source map object if generateSourceMapObject is truthy
+		fileName: "", // filename of the script file; this is only used to set the "file" property of the source map object
+		sourceMapUrl: "", // url of the source map file; if specified then a '//# sourceMappingURL=' comment is appended to the output
 	},
 	debug: false, // prints some debug information
 })
