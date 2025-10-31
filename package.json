@@ -1,6 +1,6 @@
 {
   "name": "js-shrink",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Supplemental javascript minifier",
   "main": "JsShrink.js",
   "scripts": {
@@ -8,7 +8,10 @@
   "author": "brandon942",
   "license": "MIT",
   "dependencies": {
-    "acorn": "^8.0.1",
-    "transform-ast": "^2.4.4"
+	"acorn": "^8.14.1",
+    "transform-ast": "^2.4.4",
+    "magic-string": "^0.30.21",
+	"convert-source-map": "^2.0.0",
+    "merge-source-map": "^1.1.0"
   }
 }
