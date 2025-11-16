@@ -2,7 +2,7 @@ const acorn = require('acorn')
 /** @import {Node, Options as ParserOptions} from 'acorn' */
 var MagicStringModule = require('magic-string')
 var MagicString = MagicStringModule.default
-/** @import { SourceMap, SourceMapOptions, default as MagicString } from 'magic-string' */
+/** @import { SourceMap, SourceMapOptions, default as MagicString } from './node_modules_global/magic-string' */
 var convertSourceMap = require('convert-source-map')
 var mergeSourceMap = require('merge-source-map')
 module.exports = {
@@ -13,26 +13,29 @@ module.exports = {
 	MagicStringModule,
 	MagicString, 
 	acorn,
+	bsGetIndexOfNearest,
 }
 
 	
-/** @typedef {(context:Context) => "end"|"jump"|"stop"|any} VisitorFunction0 */
-/** @typedef {(context:ContextExpanded) => "end"|"jump"|"stop"|any} VisitorFunction */
+/** @typedef {(context:Context) => "end"|"jump"|"stop"|any} VisitorFunction0 - "stop" stops the tree walk but does call all leave handlers, "end" does not call leave handlers, "jump" skips children */
+/** @typedef {(context:ContextExpanded) => "end"|"jump"|"stop"|any} VisitorFunction - "stop" stops the tree walk but does call all leave handlers, "end" does not call leave handlers, "jump" skips children */
+
 /** 
  * @typedef {Object} Context
  * @property {Node}  node 
  * @property {Node|null}  parent
  * @property {Node|null}  previousSibling
- * @property {number|null}  index - index of this Node if inside a list like Block.body
+ * @property {number|null}  index - index of this Node if it is inside a list like Block.body
 */
 /** 
  * @typedef {Object} ContextExpansion
  * @property {MagicString}  edit
- * @property {(node?:Node) => string}  sourceOrig - get node's original source code without changes
- * @property {(node?:Node) => string}  source - get node's source code with changes
- * @property {(replacement:string, node:Node) => Context}  update - replace the source code of the node
- * @property {(append:string, node:Node) => Context}  append - append code to the node's source code
- * @property {(prepend:string, node:Node) => Context}  prepend - prepend code to the node's source code
+ * @property {string}  srcOrig 
+ * @property {(node?:Node) => string}  sourceOrig
+ * @property {(node?:Node) => string}  source
+ * @property {(replacement:string, node:Node) => Context}  update 
+ * @property {(append:string, node:Node) => Context}  append 
+ * @property {(prepend:string, node:Node) => Context}  prepend 
 */
 /** @typedef {Context & ContextExpansion} ContextExpanded */
 /** 
@@ -47,17 +50,18 @@ module.exports = {
  * @property {string}  [inputFilename] - filename of input file (for sourceMap)
  * @property {boolean}  [inExecutionOrder=false] - whether to visit nodes in execution order
  * @property {boolean}  [parentChain=false] - whether to set "parent" on every Node
- * @property {boolean}  [noSourceMap=false] - set to true if source map is not wanted for better performance.
+ * @property {boolean}  [noSourceMap=false] - set to true if a source map is not wanted for better performance.
  * @property {VisitorFunction}  enter - on Node enter
- * @property {VisitorFunction}  leave - on Node leave (after visiting all children)
+ * @property {VisitorFunction}  leave - on Node leave (after all children)
 */
 /** 
  * @typedef {Object} MagicStringExtension
- * @property {(withMap?:boolean, sourcesContent?:string[], filenameOverride?:string) => string}  toString - returns the changed source code; can append an inlined source map in a comment
+ * @property {(withMap?:boolean, sourcesContent?:string[], filenameOverride?:string) => string}  toString
  * @property {(node:Node, enter:VisitorFunction, leave:VisitorFunction) => any}  walk
  * @property {ContextExpansion} ctx - helpers
- * @property {SourceMap?} map - returns a SourceMap of the changed code
+ * @property {SourceMap?} map - returns a SourceMap
 */
+
 function astTransformMS(/** @type {Options} */ options) {
 	var {source, src, code, ast, parser, parserOptions, prevSourceMap, inputFilename, inExecutionOrder, parentChain, enter, leave, noSourceMap} = options
 	source = source ?? code ?? src
@@ -78,10 +82,12 @@ function astTransformMS(/** @type {Options} */ options) {
 	});
 	var ast = options.ast ? options.ast : parse(source, parserOptions || {ecmaVersion: "latest"});
 
+	
 	/** @type {ContextExpanded} */
 	var context = {
 		edit: string,
 		node: null, index: null, parent: null, previousSibling: null,
+		srcOrig: source,
 		sourceOrig(node) {
 			node = node || context.node
 			return source.slice(node.start, node.end);
@@ -89,6 +95,10 @@ function astTransformMS(/** @type {Options} */ options) {
 		source(node) {
 			node = node || context.node
 			return string.slice(node.start, node.end);
+		},
+		remove(node) {
+			node = node || context.node
+			return string.remove(node.start, node.end);
 		},
 		update(replacement, node) {
 			node = node || context.node
@@ -105,8 +115,124 @@ function astTransformMS(/** @type {Options} */ options) {
 			string.prependRight(node.start, prepend);
 			return context;
 		},
+		move2(start, end, targetIndex, toRight=true) {
+			if (end <= start) throw "end <= start"
+			if (targetIndex >= start && targetIndex <= end) throw "targetIndex >= start && targetIndex <= end"
+			
+			var movedb4
+			if (_moved_toSort) {
+				_moved.sort(rangesComparer)
+				_moved_toSort = false
+			}
+			let i = bsGetIndexOfNearest(_moved, start, 0, 0)
+			if (i >= 0 && _moved[i][0] === start) {
+				if(_moved[i][1] === end){
+					movedb4 = _moved[i]
+					movedb4[2] = targetIndex 
+					movedb4[3] = toRight
+				}
+			}
+			
+			string.move(start, end, targetIndex);
+			if (!movedb4) {
+				_moved.push([start, end, targetIndex, toRight])
+				_moved_toSort = true
+			}
+			return context;
+		},
+		secureRange(start, end){
+			_secured.push([start, end])
+			_secured_toSort = true
+		},
+		remove2(start, end) {
+			if (_moved_toSort) {
+				_moved.sort(rangesComparer)
+				_moved_toSort = false
+			}
+			if (_secured_toSort) {
+				_secured.sort(rangesComparer)
+				_secured_toSort = false
+			}
+			let movedRanges, movesInside
+			for (let i = bsGetIndexOfNearest(_moved, start, 0, 0); i >= 0 && i < _moved.length; i++) {
+				let moved = _moved[i];
+				if (moved[0] >= end) break 
+				if (!(moved[1] <= end)) continue
+				if (!(moved[2] < start || moved[2] >= end)) {
+					movesInside ??= []
+					movesInside.push(moved)
+				}
+				else{
+					movedRanges ??= []
+					movedRanges.push(moved)
+				}
+			}
+			
+			if (movesInside && movedRanges) {
+				let _movedRanges = [...movedRanges]
+				let _movedRanges2 = new Set
+				let movedRangesLength0 = movedRanges.length
+				while (_movedRanges.length) {
+					for (let i = movesInside.length-1; i >= 0; --i) {
+						let moved = movesInside[i]
+						let moveTargetRangeIndex = _movedRanges.findIndex(m=>moved[2] > m[0] && moved[2] < m[1])
+						if (moveTargetRangeIndex >= 0) {
+							_movedRanges2.add(moved)
+						}
+					}
+					_movedRanges.length = 0
+					if (_movedRanges2.size) {
+						movedRanges.push(..._movedRanges2)
+						_movedRanges.push(..._movedRanges2)
+						_movedRanges2.clear()
+					}
+				}
+				if (movedRangesLength0 < movedRanges.length) {
+					movedRanges.sort(rangesComparer)
+				}
+			}
+			
+			var toSort = false
+			var securedRanges = movedRanges
+			for (let i = bsGetIndexOfNearest(_secured, start, 0, 0); i >= 0 && i < _secured.length; i++) {
+				let range = _secured[i];
+				if (range[0] >= end) break 
+				if (!(range[1] <= end)){
+					end = Math.min(end, range[0])
+					continue
+				}
+				securedRanges ??= []
+				securedRanges.push(range)
+				toSort = true
+			}
+			
+			if (securedRanges) {
+				if (toSort) {
+					securedRanges.sort(rangesComparer)
+				}
+				let startCurrent = start
+				for (const range of securedRanges) {
+					if (startCurrent < range[0]) {
+						string.remove( startCurrent, range[0])
+						startCurrent = range[1]
+					}
+				}
+				if (startCurrent < end) {
+					string.remove( startCurrent, end)
+				}
+			}
+			else {
+				string.remove( start, end )
+			}
+			return context;
+		},
 	};
 	string.ctx = context
+	
+	/** @typedef {[start:Number, end:Number, target:number, isRight:any, isVirtual:any]} movedRange */
+	/** @type {movedRange[]} */
+	var _moved = [], _secured = []
+	var _moved_toSort = false, _secured_toSort = false
 
 	
 	
@@ -340,5 +466,49 @@ function walk(
 	}
 	_walk(ast_node);
 }
-
-
+function bsGetIndexOfNearest(array, value, below, projection) {
+	if(!array.length) return -1
+	var max = array.length - 1
+	var bot = 0
+	var top = max
+	var i
+	var comparisonResult
+	var curVal
+	while (true) {
+		i = bot + ((top-bot)>>1)
+		curVal = array[i][projection]
+		comparisonResult = curVal === value? 0 : value < curVal? -1 : 1
+		if (bot === top) {
+			if (comparisonResult === 0) return i
+			if (below == null)  break
+			if (comparisonResult < 0) return below? i-1 : i
+			else return below? i : ++i >= array.length? -1 : i
+		}
+		if (comparisonResult === 0) return i
+		if(comparisonResult < 0){
+			if(i === bot) {
+				if (below == null)  break
+				return below? i-1 : i
+			}
+			top = i - 1
+		}
+		else{
+			bot = i + 1
+		}
+	}
+	let otherI = comparisonResult <= 0? i-1 : i+1
+	if(otherI >= array.length || otherI < 0) return i
+	let otherVal = array[otherI][projection], diffI, diffOther
+	if (comparisonResult <= 0) {
+		diffI = curVal - value
+		diffOther = value - otherVal
+		if (diffI === diffOther) return otherI
+	}
+	else {
+		diffI = value - curVal
+		diffOther = otherVal - value 
+		if (diffI === diffOther) return i
+	}
+	return diffI < diffOther? i : otherI
+}
+const rangesComparer = (a,b)=>a[0]-b[0]
