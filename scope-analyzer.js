@@ -20,8 +20,10 @@ exports.getBinding = getBinding
 exports.binding = getDeclaredBinding
 exports.isDefinition = isNodeDefinition
 exports.isBlockScopeNode = isBlockScopeNode
+exports.isFunctionNode = isFunctionNode
+/** @typedef {import("acorn").Node} Node */
 /** @typedef {Binding} Binding */
-/** @typedef {Scope & {children: ScopeType[]}} ScopeType */
+/** @typedef {Scope} Scope */
 
 /** @returns {Binding} */
 function getDeclaredBinding(node) {
@@ -32,12 +34,18 @@ function isNodeDefinition(node) {
 }
 
 
-
-function Binding (name, definition, isConst) {
+function Binding (name, definition, isConst, isBlockScoped, isHoisted) {
+	/** @type {string} */
 	this.name = name
+	/** @type {Node} */
 	this.definition = definition
+	/** @type {Set<Node>} */
 	this.references = new Set()
 	if(isConst) this.isConst = true
+	if(isBlockScoped) this.isBlockScoped = true
+	if(isHoisted) this.isHoisted = true
+	/** @type {Scope} */
+	this.scope = null
   
 	if (definition){
 		this.add(definition)
@@ -79,10 +87,8 @@ function Binding (name, definition, isConst) {
 	return this
   }
   
-/**
- * @type {ScopeType}
- */
-function Scope (/** @type {ScopeType} */ parent) {
+function Scope (/** @type {Scope} */ parent, scopeNode) {
+	/** @type {Scope} */
 	this.parent = parent
 	/** @type {Map<Node, Binding>} */
 	this.bindings = new Map()
@@ -94,6 +100,11 @@ function Scope (/** @type {ScopeType} */ parent) {
 		}
 		parent.children.push(this)
 	}
+	/** @type {Node} */
+	this.scopeNode = scopeNode
+	/** @type {Scope[]?} */
+	this.children = null
+	// hasFunctionDeclarations
 }
 
 Scope.prototype.define = function (binding) {
@@ -118,7 +129,7 @@ Scope.prototype.add = function (name, ref) {
   if (binding) {
     binding.add(ref)
   }
-  return this
+  return binding
 }
 Scope.prototype.depth = function (functions) {
 	var scope = this
@@ -126,14 +137,20 @@ Scope.prototype.depth = function (functions) {
 	while (scope = scope.parent) (!functions || functions && !this.isBlock) && ++depth
 	return depth
 }
+Scope.prototype.functionScope = function () {
+	let scope = this
+	while (scope?.isBlock) scope = scope.parent
+	return scope
+}
 Scope.prototype.addUndeclared = function (name, ref) {
-  if (!this.undeclaredBindings.has(name)) {
-    this.undeclaredBindings.set(name, new Binding(name))
-  }
+	var binding = this.undeclaredBindings.get(name)
+	if (!binding) {
+		var binding = new Binding(name)
+		this.undeclaredBindings.set(name, binding)
+	}
 
-  var binding = this.undeclaredBindings.get(name)
-  binding.add(ref)
-  return this
+	binding.add(ref)
+	return binding
 }
 
 Scope.prototype.getBinding = function (name) {
@@ -165,25 +182,22 @@ Scope.prototype.forEachAvailable = function (cb) {
 
 
 
-
-
-
-
 function createScope (node, bindings) {
   assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: createScope: node must be an ast node')
-  if (!node[kScope]) {
+  let scope = node[kScope]
+  if (!scope) {
     var parent = getParentScope(node)
-	let scope = new Scope(parent)
+	scope = new Scope(parent, node)
 	node[kScope] = scope
 	scope.n = node
 	if(isBlockScopeNode(node)) scope.isBlock = true
   }
   if (bindings) {
     for (var i = 0; i < bindings.length; i++) {
-      node[kScope].define(new Binding(bindings[i]))
+		scope.define(new Binding(bindings[i]))
     }
   }
-  return node[kScope]
+  return scope
 }
 	
 
@@ -192,13 +206,11 @@ function visitScope (node) {
   registerScopeBindings(node)
 }
 function visitBinding (node) {
-	
-	
-  assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: visitBinding: node must be an ast node')
+	assert.ok(typeof node === 'object' && node && typeof node.type === 'string', 'scope-analyzer: visitBinding: node must be an ast node')
 	if(isLabel(node)){
 		var scopeNode = getNearestScopeNode(node.parent, false)
 		var scope = createScope(scopeNode)
-		if(!scope.labels) scope.labels = {} // labelName => [...node]
+		if(!scope.labels) scope.labels = {}
 		if(!scope.labels[node.name]) scope.labels[node.name] = []
 		scope.labels[node.name].push(node)
 	}
@@ -207,24 +219,110 @@ function visitBinding (node) {
 	}
 }
 
-function crawl (ast, options) {
+var isInStrict
+var currentFunctionContext
+var rootNode 
+const functionContextStack = []
+const withStack = []
+const allBindings = []
+function crawl (ast, 
+	/** @type {{leaveEmptyBlockScopes?:any, rootIsStrictMode?:any}} */
+	options
+) {
 	assert.ok(typeof ast === 'object' && ast && typeof ast.type === 'string', 'scope-analyzer: crawl: ast must be an ast node')
-	var toLeaveEmpyBlockScopes = options?.leaveEmptyBlockScopes
-	dash(ast, {
-		enter(node, parent){
-			node.parent = parent
-			visitScope(node)
-		},
-		leave(node, parent){
-			if (!toLeaveEmpyBlockScopes) {
-				removeEmptyBlockScope(node)
+	var toLeaveEmpyBlockScopes = options && "leaveEmptyBlockScopes" in options? options.leaveEmptyBlockScopes : false
+	isInStrict = options && "rootIsStrictMode" in options? options.rootIsStrictMode : false
+	currentFunctionContext = {uses_this:false, isStrictMode:isInStrict}
+	functionContextStack.push(currentFunctionContext)
+	rootNode = ast
+	rootNode.isStrictMode = isInStrict
+	
+	try {
+		dash(ast, {
+			enter(node, parent){
+				node.parent = parent
+				setContext_enter(node)
+				visitScope(node)
+			},
+			leave(node, parent){
+				setContext_leave(node)
+				if (!toLeaveEmpyBlockScopes) {
+					removeEmptyBlockScope(node)
+				}
+			}
+		})
+		withStack.length = 0
+		dash(ast, {
+			enter(node){
+				if(node.type === "WithStatement"){
+					withStack.push(node)
+				}
+				visitBinding(node)
+			},
+			leave(node){
+				if(node.type === "WithStatement"){
+					withStack.pop(node)
+				}
+			}
+		})
+		for (const binding of allBindings) {
+			if (binding.hasRefsInWith !== true) {
+				binding.hasRefsInWith = false
 			}
 		}
-	})
-	dash(ast, visitBinding)
+	} finally {
+		functionContextStack.length = 0
+		withStack.length = 0
+		allBindings.length = 0
+		rootNode = null
+		currentFunctionContext = null
+	}
 
 	return ast
 }
+function setContext_enter(node) {
+	if (isFunctionNode(node)) {
+		let becameStrict = false
+		if (!currentFunctionContext.isStrictMode) {
+			let body = node.body
+			if (body.type === 'BlockStatement' && body.body.length) {
+				let first = body.body[0]
+				if (first.type === 'ExpressionStatement' && first.expression.type === 'Literal' && first.expression.value === 'use strict') {
+					becameStrict = true
+				}
+			}
+		}
+		currentFunctionContext = {isStrictMode: currentFunctionContext.isStrictMode || becameStrict}
+		functionContextStack.push(currentFunctionContext)
+	}
+	else if(node.type === "ClassBody"){
+		currentFunctionContext = {isStrictMode: true}
+		functionContextStack.push(currentFunctionContext)
+	}
+	else if(node.type === "WithStatement"){
+		withStack.push(node)
+	}
+}
+function setContext_leave(node) {
+	if (isFunctionNode(node)) {
+		if (currentFunctionContext.uses_this) node.uses_this = true
+		if (currentFunctionContext.isStrictMode) node.isStrictMode = true
+		functionContextStack.pop()
+		currentFunctionContext = functionContextStack[functionContextStack.length-1]
+		if (node.type === 'ArrowFunctionExpression' && node.uses_this) currentFunctionContext.uses_this = true
+	}
+	else if(node.type === "ClassBody"){
+		functionContextStack.pop()
+		currentFunctionContext = functionContextStack[functionContextStack.length-1]
+	}
+	else if(node.type === "ThisExpression"){
+		currentFunctionContext.uses_this = true
+	}
+	else if(node.type === "WithStatement"){
+		withStack.pop(node)
+	}
+}
+
 function removeEmptyBlockScope(node) {
 	var scope = getScope(node)
 	if (!scope) {
@@ -233,7 +331,7 @@ function removeEmptyBlockScope(node) {
 	if (!isBlockScopeNode(node)) {
 		return
 	}
-	if(!scope.bindings.size){
+	if(!scope.bindings.size && !scope.hasFunctionDeclarations){
 		if (scope.children) {
 			for (const c of scope.children) {
 				c.parent = scope.parent
@@ -253,7 +351,7 @@ function deleteScope (node) {
     delete node[kScope]
   }
 }
-/** @returns {ScopeType} */
+/** @returns {Scope} */
 function getScope (node) {
   if (node && node[kScope]) {
     return node[kScope]
@@ -277,33 +375,68 @@ function registerScopeBindings (node) {
     createScope(node)
   }
   else if (node.type === 'VariableDeclaration') {
-    var scopeNode = getNearestScopeNode(node, node.kind !== 'var')
+	let isVar = node.kind === 'var'
+    var scopeNode = getNearestScopeNode(node, !isVar)
     var scope = createScope(scopeNode)
     node.declarations.forEach(function (decl) {
       getAssignedIdentifiers(decl.id).forEach(function (id) {
-        scope.define(new Binding(id.name, id, node.kind === "const"))
+		if (!(isVar && scope.bindings.get(id.name))) {
+			let canDeclare = scopeNode === rootNode && isIdentifierASpecialValue(id)? false : true
+			if (canDeclare) {
+				let binding = new Binding(id.name, id, node.kind === "const", !isVar, isVar)
+				allBindings.push(binding)
+				binding.hasRefsInWith = withStack[withStack.length-1]
+				scope.define(binding)
+			}
+		}
       })
     })
   }
   else if (node.type === 'ClassDeclaration') {
-    var scopeNode = getNearestScopeNode(node, true) 
+    var scopeNode = getNearestScopeNode(node, true)
     var scope = createScope(scopeNode)
     if (node.id && node.id.type === 'Identifier') {
-      scope.define(new Binding(node.id.name, node.id))
+		let canDeclare = scopeNode === rootNode && isIdentifierASpecialValue(node.id)? false : true
+		if (canDeclare) {
+			let binding = new Binding(node.id.name, node.id, false, true)
+			allBindings.push(binding)
+			binding.hasRefsInWith = withStack[withStack.length-1]
+			scope.define(binding)
+		}
     }
   }
   else if (node.type === 'FunctionDeclaration') {
-    var scopeNode = getNearestScopeNode(node, false)
-    var scope = createScope(scopeNode)
-    if (node.id && node.id.type === 'Identifier') {
-      scope.define(new Binding(node.id.name, node.id))
-    }
+	let id = node.id
+	let validId = id && id.type === 'Identifier'
+	let isSpecialValue = validId && isIdentifierASpecialValue(id)
+	let isBlockScoped = currentFunctionContext.isStrictMode || isSpecialValue
+    var scopeNode = getNearestScopeNode(node, isBlockScoped)
+	if (!isBlockScoped) {
+		let blockScopeNode = getNearestScopeNode(node, 1)
+		if (blockScopeNode && blockScopeNode !== scopeNode) {
+			let scope = getScope(scopeNode)
+			scope.hasFunctionDeclarations = true
+		}
+	}
+	var scope = createScope(scopeNode)
+	let canDeclare = scopeNode === rootNode && isSpecialValue? false : true
+	if (validId && canDeclare) {
+		if (!scope.bindings.get(id.name)) { 
+			let binding = new Binding(id.name, id, false, currentFunctionContext.isStrictMode, true)
+			allBindings.push(binding)
+			binding.hasRefsInWith = withStack[withStack.length-1]
+			scope.define(binding)
+		}
+	}
   }
-	if (isFunction(node)) {
+	if (isFunctionNode(node)) {
     var scope = createScope(node)
     node.params.forEach(function (param) {
       getAssignedIdentifiers(param).forEach(function (id) {
-        scope.define(new Binding(id.name, id))
+		let binding = new Binding(id.name, id)
+		allBindings.push(binding)
+		binding.hasRefsInWith = withStack[withStack.length-1]
+		scope.define(binding)
       })
     })
   }
@@ -314,21 +447,31 @@ function registerScopeBindings (node) {
 	if (node.type === 'FunctionExpression' || node.type === 'ClassExpression') {
     var scope = createScope(node)
     if (node.id && node.id.type === 'Identifier') {
-      scope.define(new Binding(node.id.name, node.id))
+	  let binding = new Binding(node.id.name, node.id)
+	  allBindings.push(binding)
+	  binding.hasRefsInWith = withStack[withStack.length-1]
+	  scope.define(binding)
     }
   }
   else if (node.type === 'ImportDeclaration') {
+	currentFunctionContext.isStrictMode = true
     var scopeNode = getNearestScopeNode(node, false)
     var scope = createScope(scopeNode)
     getAssignedIdentifiers(node).forEach(function (id) {
-      scope.define(new Binding(id.name, id))
+	  let binding = new Binding(id.name, id)
+	  allBindings.push(binding)
+	  binding.hasRefsInWith = withStack[withStack.length-1]
+	  scope.define(binding)
     })
   }
   else if (node.type === 'CatchClause') {
     var scope = createScope(node)
     if (node.param) {
       getAssignedIdentifiers(node.param).forEach(function (id) {
-        scope.define(new Binding(id.name, id))
+		let binding = new Binding(id.name, id)
+		allBindings.push(binding)
+		binding.hasRefsInWith = withStack[withStack.length-1]
+		scope.define(binding)
       })
     }
   }
@@ -343,11 +486,10 @@ function getParentScope (node) {
   }
 }
 
-function getNearestScopeNode (node, canBeBlockScope) {
-  var parent = node
-  while (parent.parent) {
-    parent = parent.parent
-    if (isFunction(parent)) {
+function getNearestScopeNode (node, canBeBlockScope, checkCurrent) {
+  var parent = checkCurrent? node : node.parent
+  while (parent) {
+    if (isFunctionNode(parent)) {
       break
     }
     if (canBeBlockScope && isBlockScopeNode(parent)) {
@@ -356,16 +498,47 @@ function getNearestScopeNode (node, canBeBlockScope) {
     if (parent.type === 'Program') {
       break
     }
+    parent = parent.parent
   }
   return parent
 }
-function getNearestScope (node, canBeBlockScope) {
-  return getScope(getNearestScopeNode(node, canBeBlockScope))
+// Get the scope that the node is in
+function getNearestScope (node, canBeBlockScope, checkCurrent) {
+	var parent = checkCurrent? node : node.parent
+	while (parent) {
+		if (isFunctionNode(parent)) {
+			break
+		}
+		if (canBeBlockScope && isBlockScopeNode(parent)) {
+			let scope = getScope(parent)
+			if (scope) return scope
+		}
+		if (parent.type === 'Program') {
+			break
+		}
+		parent = parent.parent
+	}
+	let scope = getScope(parent)
+	return scope
 }
 function isBlockScopeNode(node) {
 	return node.type === 'BlockStatement' || node.type === 'ForStatement' || node.type === 'ForInStatement' || node.type === 'ForOfStatement'
 }
+function isIdentifierASpecialValue(identidierNode) {
+	let name = identidierNode.name
+	return name === "Infinity" || name === "undefined" || name === "NaN"
+}
+function isSpecialValueAVariable(identidierNode) {
+	let name = identidierNode.name
+	let scope = getNearestScope(identidierNode, 1)
+	while(scope){
+		if (scope.has(name)) return true
+		scope = scope.parent
+	}
+	return false
+}
 
+// Get the scope node that this identifier has been declared in
 function getDeclaredScope (id) {
   var parent = id
   if ((id.parent.type === 'FunctionDeclaration'|| id.parent.type === 'FunctionExpression') && id.parent.id === id) {
@@ -383,38 +556,46 @@ function getDeclaredScope (id) {
 function registerReference (node) {
   var scopeNode = getDeclaredScope(node)
   var scope = getScope(scopeNode)
-  if (scope && scope.has(node.name)) {
-    scope.add(node.name, node)
+  var binding
+  if (scope) {
+	if (scope.has(node.name)) {
+		binding = scope.add(node.name, node)
+	}
+	else {
+		binding = scope.addUndeclared(node.name, node)
+	}
   }
-  if (scope && !scope.has(node.name)) {
-    scope.addUndeclared(node.name, node) // scope == root scope
+  
+  if (binding) {
+	  let _with2 = withStack[withStack.length-1]
+	  if (binding.hasRefsInWith !== true && binding.hasRefsInWith != _with2) {
+		binding.hasRefsInWith = true
+	  }
   }
 }
 
 function isObjectKey (node) {
   return node.parent.type === 'Property' && !node.parent.computed &&
     node.parent.key === node &&
-    // a shorthand property may have the ===-same node as both the key and the value.
-    // we should detect the value part.
     node.parent.value !== node
 }
-function isMethodDefinition (node) {
-  return node.parent.type === 'MethodDefinition' && node.parent.key === node
+function isMethodOrPropertyDefinition (node) {
+  return node.parent.key === node && (node.parent.type === 'MethodDefinition' || node.parent.type === 'PropertyDefinition')
 }
 function isImportName (node) {
   return node.parent.type === 'ImportSpecifier' && node.parent.imported === node
 }
 
 function isVariable (node) {
-	var _isVariable = node.type === 'Identifier' &&
-		node.name !== "Infinity" && node.name !== "undefined" && node.name !== "NaN" && 
+	var _isVariable = node.type === 'Identifier' && 
 		!isObjectKey(node) &&
-		!isMethodDefinition(node) &&
+		!isMethodOrPropertyDefinition(node) &&
 		!isFunctionArgumentsKeyword(node) &&
 		node.parent.type !== 'LabeledStatement' &&
 		(node.parent.type !== 'MemberExpression' || node.parent.object === node ||
 			(node.parent.property === node && node.parent.computed)) &&
-		!isImportName(node)
+		!isImportName(node) &&
+		(isIdentifierASpecialValue(node)? isSpecialValueAVariable(node): true)
   	return _isVariable
 }
 function isLabel (node) {
@@ -422,10 +603,8 @@ function isLabel (node) {
 }
 
 function isFunctionArgumentsKeyword (node) {
-	// only FunctionDeclaration & FunctionExpression have the special "arguments" keyword
-	// but only if "arguments" is not declared as a local variable
 	if (node.name == "arguments") {
-		var functionNode = getEnclosingNormalFunctionNode(node)
+		var functionNode = getEnclosingFunctionNode(node)
 		if (functionNode) {
 			var declaredScopeInFunction = isVariableDeclaredInFunction(node)
 			if(!declaredScopeInFunction){
@@ -435,23 +614,20 @@ function isFunctionArgumentsKeyword (node) {
 		}
 	}
 }
-function getEnclosingNormalFunctionNode (node) {
+function getEnclosingFunctionNode (node, includingArrow) {
 	var n = node
 	while (n = n.parent) {
 		if(n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression'){
 			return n
 		}
 		if(n.type === 'ArrowFunctionExpression'){
-			return false
+			return includingArrow? n : false
 		}
 	}
 }
 function isVariableDeclaredInFunction (identifierNode) { // returns the Scope if it is
 	var name = identifierNode.name
 	var n = identifierNode
-	if ((n.parent.type === 'FunctionDeclaration'|| n.parent.type === 'FunctionExpression') && n.parent.id === n) {
-		parent = id.parent
-	  }
 	n = n.parent
 	while (n) {
 		var scope = n[kScope]
@@ -459,26 +635,15 @@ function isVariableDeclaredInFunction (identifierNode) { // returns the Scope if
 			return scope
 		}
 		
-		if(isFunction(n)){
+		if(isFunctionNode(n)){
 			return false
 		}
 		n = n.parent
 	}
 }
 
-
- 
-// estree-is-function ========================================================================================================================
-function isFunction (node) {
-if (typeof node !== 'object' || !node) {
-	throw new TypeError('estree-is-function: node must be an object')
-}
-
-if (typeof node.type !== 'string') {
-	throw new TypeError('estree-is-function: node must have a string type')
-}
-
-return node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression'
+function isFunctionNode (node) {
+	return node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression'
 }
 
 
@@ -578,6 +743,9 @@ function getAssignedIdentifiers (node, identifiers) {
   
 	if (node.type === 'RestElement') {
 	  node = node.argument
+	}
+	if (node.type === 'Property') {
+		getAssignedIdentifiers(node.value, identifiers)
 	}
 	
 	if (node.type === 'AssignmentPattern') {
