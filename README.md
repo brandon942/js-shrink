@@ -73,17 +73,17 @@ class User {
 	method2(){}
 }
 ```
-To prevent the removal of a property add `/* JSSHRINK_CLASS_OBJECT__KEEP_PROPERTY */` in front of the property or method.
-To prevent inlining into a method add `/* JSSHRINK_CLASS_OBJECT__DONT_INLINE_HERE */` in front of the method.
+To prevent the removal of a property add `/* JSSHRINK_KEEP_PROPERTY */` in front of the property or method.
+To prevent inlining into a method add `/* JSSHRINK_DONT_INLINE_HERE */` in front of the method.
 These comments can be combined.
 ```javascript
 class User {
 	prop1 = 1 
-	/* JSSHRINK_CLASS_OBJECT__KEEP_PROPERTY */
+	/* JSSHRINK_KEEP_PROPERTY */
 	prop2 = 2 // won't be inlined in method2
-	/* JSSHRINK_CLASS_OBJECT__KEEP_PROPERTY */
+	/* JSSHRINK_KEEP_PROPERTY */
 	prop3_unused = 3 // won't be removed
-	/* JSSHRINK_CLASS_OBJECT__DONT_INLINE_HERE */
+	/* JSSHRINK_DONT_INLINE_HERE */
 	method1(x){
 		return x + this.prop1 // prop1 won't be inlined in method1
 	}
