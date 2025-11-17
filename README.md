@@ -88,7 +88,7 @@ class User {
 		return x + this.prop1 // prop1 won't be inlined in method1
 	}
 	method2(){
-		// method1 will be inlined but prop2 will not
+		// method1 will be inlined but prop2 will not be
 		this.method1(this.prop2)
 	}
 }
