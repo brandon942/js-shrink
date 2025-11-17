@@ -1,4 +1,7 @@
 
+
+
+
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -244,7 +247,7 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 	})
 	return gain
 }
-function findAllLiterals(ast_node, toIncludePropertyKeys=true, minPropertyKeyLength=1, excludeNodes, src, toIncludeNumbers_minLength) {
+function findAllLiterals(ast_node, comments, toIncludePropertyKeys=true, minPropertyKeyLength=1, excludeNodes, src, toIncludeNumbers_minLength) {
 	function getNumber(node) {
 		let n = node.value
 		let origLen = node.end - node.start
@@ -334,7 +337,7 @@ function findAllLiterals(ast_node, toIncludePropertyKeys=true, minPropertyKeyLen
 						classKey_needsSemicol = false
 					}
 					else {
-						let hasSemicol = indexOfSeparator(";", src.slice(prev.end, propertyDefinition.start)) >= 0
+						let hasSemicol = findNextIndexInJs(";", src, comments, prev.end, propertyDefinition.start) >= 0
 						if (hasSemicol) classKey_needsSemicol = false
 					}
 				}
@@ -500,7 +503,6 @@ function getMaxIdentifierLengthForPropsLiterals(originalLiteral, toAllow_0_Gain,
 	var newIdentifierLength = 1
 	while (true) {
 		var gain = getCharacterGain(originalLiteral.length, newIdentifierLength, n_m2, n_p0, n_p1, n_p2, n_p3)
-		// console.log("gain "+originalLiteral+" ("+newIdentifierLength+") "+getCharacterGain(originalLiteral.length, newIdentifierLength, numPureInPlaceReplacableStringLiterals, numNeededBracketAdditions_literals, numNeededBracketAdditions_Identifier));
 		var hasGain = toAllow_0_Gain? gain >= 0 : gain > 0
 		if(!hasGain) break
 		++newIdentifierLength
@@ -1305,8 +1307,8 @@ function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode, c
 			if (ctx.edit.slice(fBody.start, fBody.start+1)[0] !== "{") {
 				throw "expecting { 2"
 			}
-			ctx.edit.remove(fBody.start, fBody.start+1) // {
-			ctx.edit.remove(fBody.end-1, fBody.end) // }
+			ctx.edit.remove(fBody.start, fBody.start+1)
+			ctx.edit.remove(fBody.end-1, fBody.end)
 		}
 		if (lets.length) { 
 			ctx.append("}", fBody)
@@ -1321,7 +1323,6 @@ function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode, c
 			} 
 			else if(functionInfo.isCallSiteAVariableDeclarator){
 				let varDeclaratorNode = refCallExpressionNode.parent
-				let varDeclarationNode = varDeclaratorNode.parent
 				varDeclaratorNode._inlinedFunc = fBody
 				if (DEBUG) {
 					varDeclaratorNode._name = functionNode._name
@@ -1557,7 +1558,7 @@ function findNextIndexInJs(str, src, comments, start=0, end=src.length, backward
 	}
 }
 function getExcludeRanges(src, ast) {
-	var ranges = [] // [ [start, end], ...  ]
+	var ranges = [] 
 	var funcNodes = new Set
 	walk(ast, node=>{
 		if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
@@ -1875,7 +1876,7 @@ function inlineClassObjectProperties(src, options) {
 				var assignmentLoop
 				var assignmentBranch
 				var hasUndef = false
-				if (binding.references.size <= (isInitializedAtDeclaration?1:2)) return true // declaration and assignment (can be the same). there are no other uses
+				if (binding.references.size <= (isInitializedAtDeclaration?1:2)) return true
 				getLocationContext()
 				if (!check_refs()){
 					return _isConstant = false
@@ -2207,11 +2208,9 @@ function inlineClassObjectProperties(src, options) {
 				let toNotInlineHereComment = hasCommentAnnotationInFront(src, property, comments, CLASS_OBJECT_MARKER__DONT_INLINE_HERE, 10, 1)
 				let propNode = property.value
 				if (propNode && propNode.type == "FunctionExpression" && propNode.uses_this) {
-					if (!toNotInlineHereComment) {
-						for (const binding of getAllSafeThisBindings(propNode)) {
-							for (const ref of binding.references) {
-								ref._isSafeThis = cObj
-							}
+					for (const binding of getAllSafeThisBindings(propNode)) {
+						for (const ref of binding.references) {
+							ref._isSafeThis = cObj
 						}
 					}
 				}
@@ -2366,8 +2365,15 @@ function inlineClassObjectProperties(src, options) {
 							}
 						}
 						
+						node._name = name
+						node._prop = property
+						if (containingProp) {
+							containingProp._inRefs ??= new Set
+							containingProp._inRefs.add(node)
+						}
+						
 						var isPropertyChanged = isAssignedTo(node) 
-						var mustKeepProp = isInSameNode || containingProp?._comment_toNotInlineHere || object._mightBeUndef || isPropertyChanged || incompatibleThis
+						var mustKeepProp = isInSameNode || object._mightBeUndef || isPropertyChanged || incompatibleThis
 						if (!mustKeepProp) {
 							property._refs ??= new Set
 							property._refs.add(node)
@@ -2403,13 +2409,12 @@ function inlineClassObjectProperties(src, options) {
 					|| typeof propNode.value == "number"
 				) || propNode.type == "TemplateLiteral" && !propNode.expressions.length
 		}
-		function getPropsAndFilterUnsuitables(cObj, _allProps) {
-			
-			function findUnusedProps() {
-				let filteredNodes = new Set
-				while (1) {
-					let filtered
-					for (const [name, prop] of _allProps) {
+		function findUnusedProps() {
+			let filteredNodes = new Set
+			while (1) {
+				let filtered
+				for (let cObj of classObjects) {
+					for (const [name, prop] of cObj._allProps) {
 						let propValue = prop.value
 						let noUses = !prop._uses
 						if (noUses && !prop._unused && !filteredNodes.has(prop)) {
@@ -2417,27 +2422,32 @@ function inlineClassObjectProperties(src, options) {
 							filtered = 1
 							filteredNodes.add(prop)
 							if (propValue) {
-								for (const [name2, prop2] of _allProps) {
-									if (prop2._unused) continue
-									if (prop2._refs) {
-										for (const refNode of prop2._refs) {
-											if (refNode.start >= propValue.start && refNode.start < propValue.end) {
-												prop2._refs.delete(refNode)
-												prop2._uses = Math.max(0, prop2._uses-1)
+								for (let cObj2 of classObjects) {
+									for (const [name2, prop2] of cObj2._allProps) {
+										if (prop2._unused) continue
+										if (prop2._refs) {
+											for (const refNode of prop2._refs) {
+												if (refNode.start >= propValue.start && refNode.start < propValue.end) {
+													prop2._refs.delete(refNode)
+													prop2._uses = Math.max(0, prop2._uses-1)
+												}
 											}
 										}
+										
 									}
-									
 								}
 							}
 						}
 					}
-					if (filtered) {
-						continue
-					}
-					break
 				}
+				if (filtered) {
+					continue
+				}
+				break
 			}
+		}
+		function getPropsAndFilterUnsuitables(cObj, _allProps) {
+			
 			function filterByCriteria() {
 				_allProps.forEach((property, name)=>{
 					var isClass = property._isInClass
@@ -2736,9 +2746,6 @@ function inlineClassObjectProperties(src, options) {
 			
 			
 			var objScope = getDirectParentScope(cObj)
-			findUnusedProps()
-			_unusedProps = _allProps.values().filter((p)=>p._unused).toArray()
-			_allProps.forEach((p, n) => p._unused && _allProps.delete(n))
 			filterByCriteria()
 			filterNonInlinables()	
 			
@@ -2771,13 +2778,13 @@ function inlineClassObjectProperties(src, options) {
 			}
 			
 			var all_edits = []
-			for (const [name, prop] of allProps) {
+			for (const prop of allProps) {
 				if (prop._refs) for (const refNode of prop._refs) {
 					if (prop._isMethod) {
-						all_edits.push([name, "inl_F", sortKey(refNode, prop), refNode, prop])
+						all_edits.push([prop._name, "inl_F", sortKey(refNode, prop), refNode, prop])
 						
 					} else {
-						all_edits.push([name, "inl_V", sortKey(refNode), refNode, prop])
+						all_edits.push([prop._name, "inl_V", sortKey(refNode), refNode, prop])
 						
 					}
 				}
@@ -2936,10 +2943,9 @@ function inlineClassObjectProperties(src, options) {
 						if (isFirst) {
 							let end = prop.end
 							if (i < classNode.properties.length-1) {
-								let betweenStr = ctx.srcOrig.slice(prop.end, classNode.properties[i+1].start)
-								let ic = indexOfSeparator(",", betweenStr, 1)
+								let ic = findNextIndexInJs(",", src, comments, prop.end, classNode.properties[i+1].start)
 								if (ic >= 0) {
-									end = prop.end + ic + 1
+									end = ic + 1
 								}
 							}
 							ctx.remove2(prop.start, end)
@@ -2947,10 +2953,9 @@ function inlineClassObjectProperties(src, options) {
 						else {
 							let start = prop.start
 							let pAbove = classNode.properties[i-1]
-							let betweenStr = ctx.srcOrig.slice(pAbove.end, prop.start)
-							let ic = indexOfSeparator(",", betweenStr, 0)
+							let ic = findNextIndexInJs(",", src, comments, pAbove.end, prop.start)
 							if (ic >= 0) {
-								start = pAbove.end + ic
+								start = ic
 							}
 							ctx.remove2(start, prop.end)
 						}
@@ -2981,10 +2986,9 @@ function inlineClassObjectProperties(src, options) {
 		}
 		
 		var _offset = 0
-		var allProps = new Map
+		var allProps = new Set
 		var _allProps
 		var unusedProps = []
-		var _unusedProps
 		var classObjects = []
 		while(1){
 			var cObj = null
@@ -3003,30 +3007,43 @@ function inlineClassObjectProperties(src, options) {
 		
 		if (classObjects.length) {
 			filterIfAccessedOnUnknownObjectsAndGetRefs()
+			findUnusedProps()
+			
+			for (var cObj of classObjects) {
+				var _allProps = cObj._allProps
+				unusedProps.push(..._allProps.values().filter((p)=>p._unused).toArray())
+				_allProps.forEach((p, n) => p._unused && _allProps.delete(n))
+				_allProps.forEach((p, n) =>{
+					if (p._comment_toNotInlineHere && p._inRefs) {
+						for (const ref of p._inRefs) {
+							ref._prop._refs?.delete(ref)
+						}
+					}
+				})
+			}
 		}
+		
 		
 		for (var cObj of classObjects) {
 			var _allProps = cObj._allProps
 			try {
 				getPropsAndFilterUnsuitables(cObj, _allProps)
+				
+				if (_allProps.size) {
+					for (const [k, v] of _allProps) allProps.add(v)
+				}
 			} catch (error) {
 				if (DEBUG) {
 					throw error
 				}
 				return
 			}
-			if (_unusedProps?.length) {
-				unusedProps.push(..._unusedProps)
-			}
-			if (_allProps.size) {
-				for (const [k, v] of _allProps) allProps.set(k, v)
-			}
 		}
 		
 		if(allProps.size || unusedProps.length){
 			if (infoObject) {
 				infoObject.inlinedProps ??= new Set
-				allProps.forEach((value, key)=>infoObject.inlinedProps.add(value._cObj._name+"."+key))
+				allProps.forEach((p)=>infoObject.inlinedProps.add(p._cObj._name+"."+p._name))
 				infoObject.removedUnusedProps ??= new Set
 				unusedProps.forEach((p)=>infoObject.removedUnusedProps.add(p._cObj._name+"."+p._name))
 			}
@@ -3112,7 +3129,7 @@ function inlineClassObjectProperties(src, options) {
 /** 
  * @typedef {Object} SourceMapOptions
  * @property {any} [generateSourceMapObject=false] - whether to generate a source map object; it is written to the property: "options.sourceMap.map"
- * @property {any} [generateSourceMapInline=false] - whether to generate and add to the output an inline source map comment
+ * @property {any} [generateSourceMapInline=false] - whether to generate and add an inline source map comment
  * @property {SourceMap?} [map] - a prior source map object; this key will hold the new source map object if generateSourceMapObject is truthy
  * @property {string?} [fileName] - filename of the output script file; this is only used to set the "file" property of the source map object
  * @property {string?} [sourceMapUrl] - url of the source map file; if specified then a '//# sourceMappingURL=' comment is added at the end
@@ -3290,7 +3307,7 @@ function Shrink(src, options) {
 	
 	
 	var [stringLiterals, numberLiterals] = findAllLiterals(
-		ast, _TO_SHRINK_ALL_PROPERTY_NAMES, _MIN_PROPERTY_NAME_LENGTH, excludeNodes, src,
+		ast, comments, _TO_SHRINK_ALL_PROPERTY_NAMES, _MIN_PROPERTY_NAME_LENGTH, excludeNodes, src,
 		_TO_REPLACE_NUMBERS && _TO_REPLACE_NUMBERS_MINLENGTH
 	)
 	/** @type {[stringName:string, [nodes: Node[]], createdVariableName?:string, reservedNames?:Set<string>, maxNewIdentifierLength:number, gain:number][]} */
@@ -3336,10 +3353,10 @@ function Shrink(src, options) {
 		}
 		if (excludeNodes) {
 			// ignore excluded areas
-			// - Currently, it is not checked whether the global is changed in those excluded functions. 
+			// - Currently, it is not checked whether the global is changed in these excluded functions. 
 			// - If these excluded functions use the same global in the same script then the globals may get out of sync with the short variables
-			//   But the only reason for excluded areas is so that the functions can be used for script injections or for worker code, which are safe cases.
-			//   The user can still add those globals to "options.globalsToNotShrink" to avoid sync problems in unsafe cases.
+			//   But the only reason for excluded areas is so that the functions can be used for script injections or for worker code which are safe cases.
+			//   The user can still add those globals to "options.globalsToNotShrink" to avoid sync problems in rare cases.
 			items_undeclared_ = items_undeclared_.filter(b => !removeRefsInExcludedAreas_areAllRefsExcluded(b, excludeNodes) || void(undeclaredNotShrunk.becauseGain.push(b.name)))
 		}
 			
@@ -3471,7 +3488,7 @@ function Shrink(src, options) {
 					return [null, item[1], item[2][1][0], item[2][4]]
 				}
 				else if(item[0] == "u"){
-					return [null, item[1], item[2].references, item[3],/*  null, "_u" */]
+					return [null, item[1], item[2].references, item[3],]
 				}
 				else if(item[0] == "b"){
 					return [null, item[1], item[2], item[3], item[4]]
@@ -3947,9 +3964,6 @@ function Shrink(src, options) {
 }
 module.exports = Shrink 
 Shrink.inlineClassObjectProperties = inlineClassObjectProperties
-
-
-
 
 
 
