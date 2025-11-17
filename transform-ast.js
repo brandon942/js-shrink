@@ -2,7 +2,7 @@ const acorn = require('acorn')
 /** @import {Node, Options as ParserOptions} from 'acorn' */
 var MagicStringModule = require('magic-string')
 var MagicString = MagicStringModule.default
-/** @import { SourceMap, SourceMapOptions, default as MagicString } from './node_modules_global/magic-string' */
+/** @import { SourceMap, SourceMapOptions, default as MagicString } from 'magic-string' */
 var convertSourceMap = require('convert-source-map')
 var mergeSourceMap = require('merge-source-map')
 module.exports = {
