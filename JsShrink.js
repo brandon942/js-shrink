@@ -18,9 +18,11 @@ const TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED = 0
 const CLASS_OBJECT_MARKER = "CLASS_OBJECT"
 const CLASS_OBJECT_MARKER_PENDING = "CLASS_OBJECT_PENDING"
 const CLASS_OBJECT_MARKER__KEEP_PROPERTY = "JSSHRINK_KEEP_PROPERTY"
-const CLASS_OBJECT_MARKER__DONT_INLINE_HERE = "JSSHRINK_DONT_INLINE_HERE"
+const CLASS_OBJECT_MARKER__DONT_INLINE_HERE = "JSSHRINK_DONT_INLINE_HERE"  
 const EXCLUDE_FUNCTION_FROM_SHRINK_MARKER = "!EXCLUDE!"
 const DECLARATIONS_HERE_MARKER = "__JSSHRINK_DECLARATIONS_HERE__"
+const DECLARATIONS_HERE_MARKER_CONST = "__JSSHRINK_CONSTANT_DECLARATIONS_HERE__"
+const DECLARATIONS_HERE_MARKER_VAR = "__JSSHRINK_VARIABLE_DECLARATIONS_HERE__"
 
 
 
@@ -1593,6 +1595,14 @@ function hasCommentAnnotationInFront(src, node, comments, annotation, maxDistanc
 		--i
 	}
 }
+function getUseStrictExpressionStatement(functionOrProgramNode) {
+	if (functionOrProgramNode.body.length) {
+		let first = functionOrProgramNode.body[0]
+		if (first.type === 'ExpressionStatement' && first.expression.type === 'Literal' && first.expression.value === 'use strict') {
+			return first
+		}
+	}
+}
 function forceArrowFunctions(ast, src, ms, comments) {
 	function usesPrivateFunctionName(n) {
 		if (n.id) {
@@ -1658,14 +1668,7 @@ function forceArrowFunctions(ast, src, ms, comments) {
 			if (DEBUG && (scopeNode.type !== "BlockStatement" && scopeNode.type !== "Program")) {
 				throw "scopeNode BlockStatement|Program expected"
 			}
-			let use_strict
-			if (scopeNode.body.length) {
-				let first = scopeNode.body[0]
-				if (first.type === 'ExpressionStatement' && first.expression.type === 'Literal' && first.expression.value === 'use strict') {
-					use_strict = first
-				}
-			}
-			
+			let use_strict = getUseStrictExpressionStatement(scopeNode)
 			var isLet = points === hoistingPointsLet
 			var decl = isLet? "let " : "var "
 			if (use_strict && src[use_strict.end-1] != ";") decl = ";"+decl
@@ -3125,6 +3128,14 @@ function inlineClassObjectProperties(src, options) {
  * @property {any} [debug=false] - prints some debug information if truthy
  * @property {any} [debugInfo] - will hold an info object about the result if debug is truthy
  * @property {any} [rootIsStrictMode=false] - whether the script is in strict mode from the start
+ * @property {any} [findBestQuoteChar=false] - will try to find the best quote character for each string - not recommended.
+ * @property {string} [declarationsPlaceholder="__JSSHRINK_DECLARATIONS_HERE__"] - custom comment marker used to insert the declarations at a specific location (default: __JSSHRINK_DECLARATIONS_HERE__)
+ * @property {string} [declarationsPlaceholderConst="__JSSHRINK_CONSTANT_DECLARATIONS_HERE__"] - custom comment marker if constant and variable declarations must be separate (default: __JSSHRINK_CONSTANT_DECLARATIONS_HERE__)
+ * @property {string} [declarationsPlaceholderVar="__JSSHRINK_VARIABLE_DECLARATIONS_HERE__"] - custom comment marker if constant and variable declarations must be separate (default: __JSSHRINK_VARIABLE_DECLARATIONS_HERE__)
+ * @property {string} [declarationsConstStart="const "] - default: "const "
+ * @property {string} [declarationsConstEnd=";"] - default: ";"
+ * @property {string} [declarationsVarStart="let "] - default: "let "
+ * @property {string} [declarationsVarEnd=";"] - default: ";"
 */
 /** 
  * @typedef {Object} SourceMapOptions
@@ -3156,13 +3167,22 @@ function Shrink(src, options) {
 	const _TO_REPLACE_NUMBERS_MINOCCURRENCES = options && "numbers_minOccurrences" in options? Math.max(2, Number(options.numbers_minOccurrences)||5) : 5
 	const _TO_REPLACE_NUMBERS_MAXNUMBERS = options && "numbers_maxNumberOfVariables" in options? Math.max(1, Number(options.numbers_maxNumberOfVariables)||20) : 20
 	const _TO_FORCE_ARROW_FUNCTIONS = options && "functions" in options? options.functions : false
-	const _TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED = _TO_SHRINK_ALL || (options && "classObjects" in options? options.classObjects : TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED)
+	const _TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED = (options && "classObjects" in options? options.classObjects : TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED)
 	const IS_STRICT_MODE = "rootIsStrictMode" in options? options.rootIsStrictMode : false
 	const _DEBUG = options && "debug" in options? options.debug : DEBUG
-	const reg_declarationsMarker = new RegExp(`(?:\\/\\/|\\/\\*)[ \\t]*${DECLARATIONS_HERE_MARKER}[ \\t]*(?:\\r?\\n|\\*\\/)`, "g")
-	var declarationsMarker = src.match(reg_declarationsMarker)
+	// other options
+	const _DECLARATIONS_MARKER = options && "declarationsPlaceholder" in options && typeof options.declarationsPlaceholder == "string"? options.declarationsPlaceholder : DECLARATIONS_HERE_MARKER
+	const _DECLARATIONS_MARKER_CONST = options && "declarationsPlaceholderConst" in options && typeof options.declarationsPlaceholderConst == "string"? options.declarationsPlaceholderConst : DECLARATIONS_HERE_MARKER_CONST
+	const _DECLARATIONS_MARKER_VAR = options && "declarationsPlaceholderVar" in options && typeof options.declarationsPlaceholderVar == "string"? options.declarationsPlaceholderVar : DECLARATIONS_HERE_MARKER_VAR
+	let _CONST_DECLARATIONS_START = options && "declarationsConstStart" in options && typeof options.declarationsConstStart == "string"? options.declarationsConstStart : "const "
+	const _CONST_DECLARATIONS_END = options && "declarationsConstEnd" in options && typeof options.declarationsConstEnd == "string"? options.declarationsConstEnd : ";"
+	let _VAR_DECLARATIONS_START = options && "declarationsVarStart" in options && typeof options.declarationsVarStart == "string"? options.declarationsVarStart : "let "
+	const _VAR_DECLARATIONS_END = options && "declarationsVarEnd" in options && typeof options.declarationsVarEnd == "string"? options.declarationsVarEnd : ";"
+	if (isJsAlphanum(_CONST_DECLARATIONS_START[_CONST_DECLARATIONS_START.length-1])) _CONST_DECLARATIONS_START += " " // if "const" then it needs a whitespace: "const "
+	if (isJsAlphanum(_VAR_DECLARATIONS_START[_VAR_DECLARATIONS_START.length-1])) _VAR_DECLARATIONS_START += " " // if "let" then it needs a whitespace: "let "
+	const _TO_FIND_BEST_QUOTE = options && "findBestQuoteChar" in options? options.findBestQuoteChar : false
 	
-	
+	// source map options
 	var src_start_Length = src.length
 	var srcInit = src
 	var inputMap, inputMapInit
@@ -3300,6 +3320,17 @@ function Shrink(src, options) {
 		if (!excludeNodes?.size) {
 			excludeNodes = null
 		}
+	}
+	
+	{
+		let _declarationsMarker = _DECLARATIONS_MARKER.trim()
+		let _declarationsMarkerConst = _DECLARATIONS_MARKER_CONST.trim()
+		let _declarationsMarkerVar = _DECLARATIONS_MARKER_VAR.trim()
+		var declarationsMarker = _declarationsMarker && comments.find(c => c.value.trim() === _declarationsMarker)
+		var declarationsMarkerConst = _declarationsMarkerConst && comments.find(c => c.value.trim() === _declarationsMarkerConst) || declarationsMarker
+		var declarationsMarkerVar = _declarationsMarkerVar && comments.find(c => c.value.trim() === _declarationsMarkerVar) || declarationsMarker || declarationsMarkerConst
+		declarationsMarkerConst ||= declarationsMarkerVar
+		declarationsMarker = declarationsMarkerConst
 	}
 	
 	
@@ -3707,16 +3738,57 @@ function Shrink(src, options) {
 	}
 	
 	// create the declaration statement (eg. `const a="literal1", b=.....;`) -----------------------------------------------------------------------------
-	var declaration_string = ""
-	var declaration_string_safe = ""
+	var declaration_string_const = ""
+	var declaration_string_var = ""
+	var declaration_string_var_safe = ""
 	if (isGainOk_const) {
-		declaration_string += "const " + all_string_literals.map(t => {
-			var escaped = t[0]
-			escaped = JsEscapeString(escaped)
-			if (_CONST_DECLARATION_QUOTE_CHARACTER === "`") {
-				escaped = escaped.replace(/\$\{/g, "\\${")
+		function escapeWithBestQuote(str) {
+			let single = JsEscapeString(str, "'")
+			let double = JsEscapeString(str, '"')
+			let backtick = JsEscapeString(str, "`").replace(/\$\{/g, "\\${")
+			let singleLen = single.length
+			let doubleLen = double.length
+			let backtickLen = backtick.length
+			let result = 0, bestLen
+			if (singleLen == doubleLen) {
+				result = 3
+				bestLen = singleLen
 			}
-			return t[2] + "=" + _CONST_DECLARATION_QUOTE_CHARACTER + escaped + _CONST_DECLARATION_QUOTE_CHARACTER
+			else if (singleLen < doubleLen){
+				result = 1
+				bestLen = singleLen
+			}
+			else {
+				result = 2
+				bestLen = doubleLen
+			}
+			if (bestLen == backtickLen) {
+				result |= 4
+			}
+			else if(bestLen > backtickLen){
+				result = 4
+			}
+			if (result&1) ++stat_bestQuote_single
+			if (result&2) ++stat_bestQuote_double
+			if (result&4) ++stat_bestQuote_backtick
+			return result&2? '"'+double+'"' : result&1? "'"+single+"'" : "`"+backtick+"`"
+		}
+		let stat_bestQuote_single = 0
+		let stat_bestQuote_double = 0
+		let stat_bestQuote_backtick = 0
+		declaration_string_const += _CONST_DECLARATIONS_START + all_string_literals.map(t => {
+			var escaped = t[0]
+			if (_TO_FIND_BEST_QUOTE) {
+				escaped = escapeWithBestQuote(escaped)
+			}
+			else {
+				escaped = JsEscapeString(escaped, _CONST_DECLARATION_QUOTE_CHARACTER)
+				if (_CONST_DECLARATION_QUOTE_CHARACTER === "`") {
+					escaped = escaped.replace(/\$\{/g, "\\${")
+				}
+				escaped = _CONST_DECLARATION_QUOTE_CHARACTER + escaped + _CONST_DECLARATION_QUOTE_CHARACTER
+			}
+			return t[2] + "=" + escaped
 		})
 		.concat(builtin_values_to_replace.map(b => 
 			b[1] + "=" + b[0]
@@ -3727,21 +3799,29 @@ function Shrink(src, options) {
 		.concat(numberLiterals.map(b => 
 			b[5] + "=" + b[1]
 		))
-		.join(",") + ";"
+		.join(",") + _CONST_DECLARATIONS_END
 		
-		declaration_string_safe += declaration_string
+		if (_TO_FIND_BEST_QUOTE) {
+			let all = all_string_literals.length
+			let allf = 100/all
+			var stats_bestQuote = {
+				bestQuote_single: stat_bestQuote_single+`/${all} (${Math.round(stat_bestQuote_single*allf)}%)`,
+				bestQuote_double: stat_bestQuote_double+`/${all} (${Math.round(stat_bestQuote_double*allf)}%)`,
+				bestQuote_backtick: stat_bestQuote_backtick+`/${all} (${Math.round(stat_bestQuote_backtick*allf)}%)`,
+			}
+		}
 	}
 	if (isGainOk_let) {
-		let undeclared_globals_declaration = "let " + undeclared_globals_to_replace_variable.map(b => 
+		let undeclared_globals_declaration = _VAR_DECLARATIONS_START + undeclared_globals_to_replace_variable.map(b => 
 			b.id + "=" + b.name
 		)
-		.join(",") + ";"
-		let undeclared_globals_declaration_safe = "let " + undeclared_globals_to_replace_variable.map(b => 
+		.join(",") + _VAR_DECLARATIONS_END
+		let undeclared_globals_declaration_safe = _VAR_DECLARATIONS_START + undeclared_globals_to_replace_variable.map(b => 
 			b.id + "=" + `typeof ${b.name} !== ${_CONST_DECLARATION_QUOTE_CHARACTER}undefined${_CONST_DECLARATION_QUOTE_CHARACTER}?${b.name}:void 0`
 		)
-		.join(",") + ";"
-		declaration_string += undeclared_globals_declaration
-		declaration_string_safe += undeclared_globals_declaration_safe
+		.join(",") + _VAR_DECLARATIONS_END
+		declaration_string_var += undeclared_globals_declaration
+		declaration_string_var_safe += undeclared_globals_declaration_safe
 	}
 	
 	
@@ -3890,8 +3970,16 @@ function Shrink(src, options) {
 				}
 			}
 			else if(!declarationsMarker && iife_wrapper_node && node === iife_wrapper_node){
-				var blockWithConstDeclarations = "{" + declaration_string + source(node).slice(1)
-				update(blockWithConstDeclarations, node)
+				let declarationsStr = declaration_string_const + declaration_string_var
+				let use_strict = getUseStrictExpressionStatement(node)
+				if (use_strict) {
+					if (src[use_strict.end-1] != ";") declarationsStr = ";"+declarationsStr
+					edit.prependLeft(use_strict.end, declarationsStr)
+				}
+				else {
+					edit.remove(node.start, node.start+1)
+					prepend("{" + declaration_string_const + declaration_string_var, node)
+				}
 			}
 		}
 	})
@@ -3915,11 +4003,28 @@ function Shrink(src, options) {
 	}
 	
 	if (declarationsMarker) {
-		let optionalNewline = declarationsMarker[0][declarationsMarker[0].length-1] === "\n"? "\n" : ""
-		result.replace(reg_declarationsMarker, declaration_string + optionalNewline)
+		if (declarationsMarkerConst && declarationsMarkerVar && declarationsMarkerConst !== declarationsMarkerVar) {
+			// separate locations for "const" and "let"
+			result.ctx.update(declaration_string_const, declarationsMarkerConst)
+			result.ctx.update(declaration_string_var, declarationsMarkerVar)
+		}
+		else {
+			// 1 location for both
+			result.ctx.update(declaration_string_const + declaration_string_var, declarationsMarker)
+		}
 	}
 	else if (!iife_wrapper_node) {
-		result.prepend(declaration_string)
+		let declarationsStr = declaration_string_const + declaration_string_var
+		let use_strict = getUseStrictExpressionStatement(ast)
+		if (use_strict) {
+			if (src[use_strict.end-1] != ";") declarationsStr = ";"+declarationsStr
+			result.prependLeft(use_strict.end, declarationsStr)
+		}
+		else {
+			let i = indexOfSeparator("", src, 1)
+			if (i > 0 && src[i-1] == "\n") declarationsStr += "\n"
+			result.prependLeft(i, declarationsStr)
+		}
 	}
 	
 	if (_SOURCEMAP_URL && !_TO_GENERATE_SOURCEMAP_INLINE && _TO_GENERATE_SOURCEMAP_OBJECT) {
@@ -3955,6 +4060,7 @@ function Shrink(src, options) {
 		debug_insufficientGainFor,
 		...debugInfo1,
 		undeclaredNotShrunk,
+		...stats_bestQuote,
 	}
 	if (options) options.debugInfo = debugInfo2
 	if(_DEBUG) {
@@ -3964,6 +4070,9 @@ function Shrink(src, options) {
 }
 module.exports = Shrink 
 Shrink.inlineClassObjectProperties = inlineClassObjectProperties
+
+
+
 
 
 
