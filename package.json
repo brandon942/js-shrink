@@ -1,6 +1,6 @@
 {
   "name": "js-shrink",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Supplemental javascript minifier",
   "main": "JsShrink.js",
   "scripts": {
