@@ -41,6 +41,14 @@ var out_code = shrink(in_code, {
 	debug: false, // prints some debug information if truthy
 	debugInfo: false, // will hold an info object about the result if debug is truthy
 	rootIsStrictMode: false, // whether the script is in strict mode from the start
+	// other
+	declarationsPlaceholder: "__JSSHRINK_DECLARATIONS_HERE__", // custom comment marker used to insert the declarations at a specific location
+	declarationsPlaceholderConst: "__JSSHRINK_CONSTANT_DECLARATIONS_HERE__", // custom comment marker if constant and variable declarations must be separate
+	declarationsPlaceholderVar: "__JSSHRINK_VARIABLE_DECLARATIONS_HERE__", // custom comment marker if constant and variable declarations must be separate
+	declarationsConstStart: "const ",
+	declarationsConstEnd: ";",
+	declarationsVarStart: "let ",
+	declarationsVarEnd: ";",
 })
 ```
    
