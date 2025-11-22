@@ -1,17 +1,24 @@
 {
   "name": "js-shrink",
-  "version": "1.0.11",
+  "version": "1.0.13",
   "description": "Supplemental javascript minifier",
-  "main": "JsShrink.js",
-  "scripts": {
-  },
+  "repository": "https://github.com/brandon942/js-shrink",
   "author": "brandon942",
   "license": "MIT",
+  "main": "JsShrink.js",
+  "scripts": {},
+  "files": [
+    "README.md",
+    "LICENSE",
+    "JsShrink.js",
+    "scope-analyzer.js",
+    "transform-ast.js"
+  ],
   "dependencies": {
-	"acorn": "^8.14.1",
+    "acorn": "^8.14.1",
     "transform-ast": "^2.4.4",
     "magic-string": "^0.30.21",
-	"convert-source-map": "^2.0.0",
+    "convert-source-map": "^2.0.0",
     "merge-source-map": "^1.1.0"
   }
 }
