@@ -2,6 +2,8 @@
 
 
 
+
+
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -808,6 +810,7 @@ function isBindingExistenceChecked(binding) {
 function isCallNode(node) {
 	return node.type === "CallExpression" 
 	|| node.type === "MemberExpression"
+	|| node.type === "NewExpression"
 }
 function hasExpressionCalls(node, OrThis) {
 	var has = false
@@ -828,6 +831,19 @@ function hasExpressionCalls(node, OrThis) {
 }
 function isFunctionNode(n) {
 	return n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression'
+}
+function forAllThis(node, cbThis, cbFunc) {
+	if (!node) return  
+	if (isFunctionNode(node)) node = node.body
+	walk(node, n=>{
+		if(n.type == "ThisExpression"){
+			return cbThis(n)
+		}
+		if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression'){
+			if (cbFunc) cbFunc(n)
+			return "jump"
+		}
+	})
 }
 function isSafeAssignment(AssignmentExpression) {
 	var safe = true
@@ -996,7 +1012,7 @@ function getFunctionInfo(functionNode, refCallExpressionNode, variableNamesChang
 				isunsafe = true
 				break
 			}
-			if (anode.parent.type == "BlockStatement") {
+			if (anode.parent.type == "BlockStatement" || anode.parent.type == "Program") {
 				targetStatement = anode
 				anode = anode.parent
 				break
@@ -1056,7 +1072,7 @@ function editInlinedFunctionBody(functionNode, functionInfo, refCallExpressionNo
 				})
 				if (firstDeclarator) {
 					ctx.edit.remove(n.start, firstDeclarator.start)
-					if(hasComplicated && numAssignmentDeclarators.length == 1){
+					if(hasComplicated){
 						ctx.prepend("0,", n) 
 					}
 					if (n.parent.type !== "ForStatement") {
@@ -1714,7 +1730,7 @@ function forceArrowFunctions(ast, src, ms, comments) {
 
 /** 
  * @typedef {Object} InlineClassObjectPropertiesOptions
- * @property {any} [variableNamesChangeable=false]
+ * @property {any} [variableNamesChangeable=true]
  * @property {any} [classesNeedCommentMarker=false]
  * @property {any} [inlineConstantsMaxNumberOfTimes=3]
  * @property {any} [toAllowInliningOutsideOfTheClass=true]
@@ -1729,7 +1745,7 @@ function forceArrowFunctions(ast, src, ms, comments) {
  * @returns {string}
 */
 function inlineClassObjectProperties(src, options) {
-	const variableNamesChangeable = options && "variableNamesChangeable" in options? options.variableNamesChangeable : false
+	const variableNamesChangeable = options && "variableNamesChangeable" in options? options.variableNamesChangeable : true
 	const classesNeedCommentMarker = options && "classesNeedCommentMarker" in options? options.classesNeedCommentMarker : false
 	const toAllowInliningOutsideOfTheClass = options && "allowInliningOutsideOfTheClass" in options? options.allowInliningOutsideOfTheClass : true
 	const inlineLiteralValues_maxNumberOfTimes = Math.max(1, Number(options?.["inlineConstantsMaxNumberOfTimes"]) || 3)
@@ -2140,24 +2156,38 @@ function inlineClassObjectProperties(src, options) {
 			}
 			function getAllSafeThisBindings(functionNode) {
 				var result = []
-				walk(functionNode.body, n=>{
-					if(n.type == "ThisExpression"){
-						var leftRight = isValidAssignment(n.parent)
+				forAllThis(functionNode, n=>{
+					var leftRight = isValidAssignment(n.parent)
+					if (leftRight) {
+						let [left, right] = leftRight
+						if (leftRight && right === n && left.type === "Identifier") {
+							let binding = scan.getBinding(left)
+							if (IsBindingConstant(binding, 1)) {
+								result.push(binding, ...getOtherAssignedBindings(binding))
+							}
+						}
+					}
+					n._isValidThis = cObj
+				})
+				return result
+			}
+			function getAllSafeInstanceBindings(binding) {
+				var result = []
+				for (const ref of binding.references) {
+					let parent = ref.parent
+					if (parent.type === "NewExpression" && parent.callee === ref) {
+						var leftRight = isValidAssignment(parent.parent)
 						if (leftRight) {
-							let [left, right, isDeclaration] = leftRight
-							if (leftRight && right === n && left.type === "Identifier" && isDeclaration) {
-								let binding = scan.getBinding(left)
-								if (IsBindingConstant(binding, 1)) {
-									result.push(binding, ...getOtherAssignedBindings(binding))
+							let [left, right] = leftRight
+							if (leftRight && right === parent && left.type === "Identifier") {
+								let binding2 = scan.getBinding(left)
+								if (IsBindingConstant(binding2, 1)) {
+									result.push(binding2, ...getOtherAssignedBindings(binding2))
 								}
 							}
 						}
-						n._isValidThis = cObj
 					}
-					if (n !== functionNode && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression')) {
-						return "jump"
-					}
-				})
+				}
 				return result
 			}
 			
@@ -2197,6 +2227,13 @@ function inlineClassObjectProperties(src, options) {
 								}
 								else {
 									ref._isSafeThis = cObj
+								}
+							}
+						}
+						if (isClass) {
+							for (const binding2 of getAllSafeInstanceBindings(binding)) {
+								for (const ref of binding2.references) {
+									ref._isSafeInstanceRef = cObj
 								}
 							}
 						}
@@ -2289,12 +2326,12 @@ function inlineClassObjectProperties(src, options) {
 					for (let i = classObjects.length-1; i >= 0; --i) {
 						let _cObj = classObjects[i];
 						let _allProps = _cObj._allProps
-						let knownObject = object._isValidThis || object._isSafeThis || object._isSafeClassRef
+						let knownObject = object._isValidThis || object._isSafeThis || object._isSafeClassRef || object._isSafeInstanceRef
 						if (!knownObject || knownObject === _cObj) {
 							let property = _allProps.get(name)
 							if (property) {
 								let isRefOutsideOfTheClass = node.start < _cObj.start || node.start >= _cObj.end
-								let isValidRef = !isRefOutsideOfTheClass || toAllowInliningOutsideOfTheClass && object._isSafeClassRef === _cObj
+								let isValidRef = !isRefOutsideOfTheClass || toAllowInliningOutsideOfTheClass && (object._isSafeClassRef === _cObj || object._isSafeInstanceRef === _cObj)
 								if (!isValidRef && toInlineSafeLiteralsWherePossible && property._isPropertyValueAlwaysInlinable) {
 									property._mustKeep = 1
 									isValidRef = 1
@@ -2312,8 +2349,10 @@ function inlineClassObjectProperties(src, options) {
 					if (!toAllowInliningOutsideOfTheClass && !cObj_ofCurrentLocation) return
 					var cObj_ofProperty = cObj_ofCurrentLocation
 					var objectIsSafeClassRef = object.type == "Identifier" && object._isSafeClassRef
-					if (toAllowInliningOutsideOfTheClass && objectIsSafeClassRef && cObj_ofCurrentLocation !== objectIsSafeClassRef) {
-						cObj_ofProperty = objectIsSafeClassRef
+					var objectIsSafeInstanceRef = object.type == "Identifier" && object._isSafeInstanceRef
+					var safeClassOrInstance = objectIsSafeClassRef || objectIsSafeInstanceRef
+					if (toAllowInliningOutsideOfTheClass && safeClassOrInstance && cObj_ofCurrentLocation !== safeClassOrInstance) {
+						cObj_ofProperty = safeClassOrInstance
 					}
 					
 					if (cObj_ofProperty) {
@@ -2325,11 +2364,13 @@ function inlineClassObjectProperties(src, options) {
 						var objectIsThis = object.type == "ThisExpression" && object._isValidThis === cObj_ofProperty
 						var objectIsSafeThisVariable = !objectIsThis && object.type == "Identifier" && object._isSafeThis === cObj_ofProperty
 						var objectIsSafeClassRef = object.type == "Identifier" && object._isSafeClassRef === cObj_ofProperty
+						var objectIsSafeInstanceRef = object.type == "Identifier" && object._isSafeInstanceRef === cObj_ofProperty
 						var safeThis = objectIsThis || objectIsSafeThisVariable
-						var isSafeClassObjectAccess = objectIsThis || objectIsSafeThisVariable || objectIsSafeClassRef
+						var isSafeClassObjectAccess = objectIsThis || objectIsSafeThisVariable || objectIsSafeClassRef || objectIsSafeInstanceRef
+						var isSafeVariableAccess = isRefOutsideOfTheClass && (objectIsSafeClassRef || objectIsSafeInstanceRef)
 						var usageOnKnownProperty = isSafeClassObjectAccess && property
 						var containingProp, containingPropIsStatic
-						if(1){
+						if(!isRefOutsideOfTheClass){
 							let propertyParent = isClass? cObj_ofProperty.body : cObj_ofProperty
 							let parent = node
 							while(parent && parent !== propertyParent) {
@@ -2351,20 +2392,27 @@ function inlineClassObjectProperties(src, options) {
 						
 									
 									
-						var propNode = property?.value
+						var propNode = property.value
 						var propertyIsStatic = isClass? property.static : true
 						var thisIsInstance = isClass? !containingPropIsStatic : false
+						var isCompatibleVariableAccess = propertyIsStatic? objectIsSafeClassRef : objectIsSafeInstanceRef
 						var isInSameNode = propNode && node.start >= propNode.start && node.end <= propNode.end
-						var isNoAccess = !(safeThis && thisIsInstance != propertyIsStatic)
-										&& !(propertyIsStatic && objectIsSafeClassRef)
+						var isNoAccess = !(safeThis && thisIsInstance != propertyIsStatic) && !(isCompatibleVariableAccess)
 						if (isNoAccess) {
 							isUsage = false
 							return
 						}
 						
+						var incompatibleThis = false
 						if (propNode && isFunctionNode(propNode) && propNode.uses_this) {
-							if (isRefOutsideOfTheClass || containingPropIsStatic != propertyIsStatic) {
-								var incompatibleThis = true
+							if (isRefOutsideOfTheClass) {
+								if (isSafeVariableAccess && isCompatibleVariableAccess){
+									property._thisBinding ??= scan.getBinding(object) 
+								}
+								else incompatibleThis = true
+							}
+							else if (containingPropIsStatic != propertyIsStatic) {
+								incompatibleThis = true
 							}
 						}
 						
@@ -2405,7 +2453,6 @@ function inlineClassObjectProperties(src, options) {
 				}
 			})
 		}
-		
 		function isPropertyValueAlwaysInlinableLiteral(propNode) {
 			return propNode.type == "Literal" && (
 					typeof propNode.value == "string"
@@ -2627,7 +2674,9 @@ function inlineClassObjectProperties(src, options) {
 								do {
 									if(commonScope == aScope) break
 									for (const [,b] of aScope.bindings) {
-										if(outsideBindings.has(b.name)){
+										let outsideBindingsInfo =  outsideBindings.get(b.name)
+										let outsideBinding = outsideBindingsInfo?.[0]
+										if(outsideBindingsInfo && (!outsideBinding || outsideBinding !== b)){
 											coveringBindings.push(b)
 										}
 									}	
@@ -2639,6 +2688,13 @@ function inlineClassObjectProperties(src, options) {
 						}
 					}
 					
+				}
+				function renameBinding(b) {
+					if (b._rn) return b._rn
+					let name = b.name+gimmeSomethingUnique()
+					b._rn = name
+					b.references.forEach(r=>r._rn = name)
+					return name
 				}
 				function checkMethodArgumentNameCollisions() {
 					var has
@@ -2689,6 +2745,15 @@ function inlineClassObjectProperties(src, options) {
 				
 				
 				findCoveringBindings()
+				
+				_allProps.forEach((property, name)=>{
+					if (isInlinedToWithOutsideRefs_orUnfinished(property)) {
+						++_num_Pending
+						_allProps.delete(name)
+						cObj._setComment_pending = 1
+					}
+				})
+				
 				if(!variableNamesChangeable){
 					_allProps.forEach((prop, name)=>{
 						if (prop._refs.some(r=>(r._covOutRefs && r._covOutRefs.length))) {
@@ -2710,8 +2775,7 @@ function inlineClassObjectProperties(src, options) {
 							var isAnyRefInWith = coveringBindings.some(b=>b.hasRefsInWith)
 							if (!isAnyRefInWith) {
 								coveringBindings.forEach((b) => {
-									let name = gimmeSomethingUnique()
-									b.references.forEach(r=>r._rn = name)
+									renameBinding(b)
 								})
 							}
 							else {
@@ -2727,8 +2791,7 @@ function inlineClassObjectProperties(src, options) {
 							var isAnyRefInWith = methodScope.bindings.some(b=>b.hasRefsInWith)
 							if (!isAnyRefInWith) {
 								methodScope.bindings.forEach(b=>{
-									let name = gimmeSomethingUnique()
-									b.references.forEach(r=>r._rn = name)
+									renameBinding(b)
 								})
 							}
 							else {
@@ -2738,13 +2801,44 @@ function inlineClassObjectProperties(src, options) {
 					})
 				}
 				
-				_allProps.forEach((property, name)=>{
-					if (isInlinedToWithOutsideRefs_orUnfinished(property)) {
-						++_num_Pending
-						_allProps.delete(name)
-						cObj._setComment_pending = 1
-					}
-				})
+				if (toAllowInliningOutsideOfTheClass) {
+					_allProps.forEach((prop, name)=>{
+						let thisBinding = prop._thisBinding
+						if (thisBinding) {
+							let thisBindingName = thisBinding._rn || thisBinding.name
+							let allThis = []
+							let hasNameConflict
+							forAllThis(prop.value, n=>{
+								allThis.push(n)
+								var _scope = scan.nearestScope(n, true)
+								do {
+									if(thisBinding.scope == _scope) break
+									for (const [,b] of _scope.bindings) {
+										let bnme = b._rn || b.name
+										if(bnme === thisBindingName){
+											hasNameConflict = true
+											if (!variableNamesChangeable) return "end"
+										}
+									}	
+								} while (_scope = _scope.parent);
+							})
+							
+							if (hasNameConflict) {
+								if (variableNamesChangeable) {
+									let name = renameBinding(thisBinding)
+									for (const _this of allThis) _this._rn = name
+								}
+								else {
+									_allProps.delete(name)
+								}
+							}
+							else {
+								for (const _this of allThis) _this._rn = thisBinding.name
+							}
+						}
+					})
+				}
+				
 			}
 			
 			
@@ -2753,8 +2847,6 @@ function inlineClassObjectProperties(src, options) {
 			filterNonInlinables()	
 			
 		}
-		
-		
 		function getTransformedSrc(){
 			var result = astTransformMS({src, ast, prevSourceMap:inputMap, parentChain:1, leave(ctx){
 				var {update, node, source} = ctx
@@ -3220,7 +3312,7 @@ function Shrink(src, options) {
 		
 		let info = {}
 		let options_ = {
-			variableNamesChangeable: _TO_SHRINK_ALL_VARIABLES,
+			variableNamesChangeable: true,
 			rootIsStrictMode: IS_STRICT_MODE,
 			infoObject: info,
 			withSourceMap: _TO_GENERATE_SOURCEMAP,
@@ -3247,19 +3339,13 @@ function Shrink(src, options) {
 			var allThis = []
 			function getAllThisInThisObject(rootNode) {
 				var tuple
-				walk(rootNode, n=>{
-					if(n.type == "ThisExpression"){
-						if(!tuple){
-							tuple = [rootNode, []]
-							allThis.push(tuple)
-						}
-						tuple[1].push(n)
+				forAllThis(rootNode, n=>{
+					if(!tuple){
+						tuple = [rootNode, []]
+						allThis.push(tuple)
 					}
-					if (n !== rootNode && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression')) {
-						getAllThisInThisObject(n)
-						return "jump"
-					}
-				})
+					tuple[1].push(n)
+				}, getAllThisInThisObject)
 				
 			}
 			var ast = acorn.parse(src, {
