@@ -3,7 +3,6 @@
 
 
 
-
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -267,6 +266,12 @@ function findAllLiterals(ast_node, comments, toIncludePropertyKeys=true, minProp
 				let hasFraction = n%1, str2
 				newStr = n.toString()
 				len = newStr.length
+				let e = 0, i = len-1
+				while(i && newStr[i] === "0") {--i; ++e}
+				if(e >= 3){
+					newStr = newStr.slice(0, i+1)+"e"+e
+					len = newStr.length
+				}
 				str2 = n.toExponential().replace("+","")
 				if (str2.length < len && Number(str2) === n) {
 					len = str2.length
@@ -1575,6 +1580,31 @@ function findNextIndexInJs(str, src, comments, start=0, end=src.length, backward
 		return -1
 	}
 }
+function nextTokenInJs1(src, start=0, end = src.length-1, skipChar) {
+	var i = start-1
+	while (++i < end) {
+		let c = src[i]
+		if (c === "/") {
+			if (src[i+1] === "/") {
+				let i2 = src.indexOf("\n", i+2)
+				if (i2 < 0) return ""
+				i = i2
+				continue
+			}
+			else if(src[i+1] === "*"){
+				let i2 = src.indexOf("*/", i+2)
+				if (i2 < 0) return ""
+				i = i2+1
+				continue
+			}
+		}
+		if (c.trim() !== "") {
+			if (skipChar && c === skipChar) continue
+			return [c, i]
+		}
+	}
+	return
+}
 function getExcludeRanges(src, ast) {
 	var ranges = [] 
 	var funcNodes = new Set
@@ -1638,6 +1668,16 @@ function forceArrowFunctions(ast, src, ms, comments) {
 		if (n.parent.type == "Property" && (n.parent.kind != "init" || n.parent.method) || n.parent.type == "MethodDefinition") return
 		if (isFunctionExpression) {
 			if (usesPrivateFunctionName(n)) return
+			if (n.parent.type === "CallExpression" && n.parent.callee === n) {
+				let c = nextTokenInJs1(src, n.end)?.[0]
+				if (c === "(") {
+					ms.prependRight(n.start, "(")
+					ms.appendLeft(n.end, ")")
+					if (n.parent.parent.type === "ExpressionStatement") {
+						ms.prependRight(n.start, ";")
+					}
+				}
+			}
 		}
 		var hasParams = n.params.length
 		var init_start = n.start
@@ -1718,7 +1758,12 @@ function forceArrowFunctions(ast, src, ms, comments) {
 				}
 			}
 			for (const func of funcs) {
-				ms.move(func.start, func.end, targetIndex)
+				if (func.start === targetIndex) {
+					targetIndex = func.end
+				}
+				else {
+					ms.move(func.start, func.end, targetIndex)
+				}
 			}
 		}
 	}
@@ -1859,7 +1904,7 @@ function inlineClassObjectProperties(src, options) {
 				}
 				var isVoided = node.type == "ExpressionStatement"
 						|| node.type == "SequenceExpression" && (
-							node.expression[node.expression.length-1] !== node || node.parent.type == "ExpressionStatement"
+							node.expressions[node.expressions.length-1] !== node || node.parent.type == "ExpressionStatement"
 						)
 				return !isVoided
 			}
@@ -3970,7 +4015,7 @@ function Shrink(src, options) {
 						}
 						
 						let caseDelta = node._caseDelta
-						var diff = name - id - caseDelta
+						var diff = name.length - id.length - caseDelta
 						if(diff < 0 || diff == 0 && !_TO_REPLACE_ON_0_GAIN) return
 						
 						if (needsPropertyKeyBrackets) {
@@ -4021,11 +4066,9 @@ function Shrink(src, options) {
 			// Fix: "object.[A]" => "object[A]"
 			else if(node.type == "MemberExpression" && node.computed == false && !node.optional && stringLiterals_nodesMap.has(node.property)){
 				// remove "."
-				var curSrc = source(node)
-				var i = curSrc.lastIndexOf(".")
-				if(i > 0){
-					var newSrc = curSrc.slice(0, i) + curSrc.slice(i+1)
-					update(newSrc, node)
+				let [c, i] = nextTokenInJs1(src, node.object.end, node.property.start, ')')??""
+				if (c === ".") {
+					edit.remove(i, i+1)
 				}
 			}
 			else if(_TO_SHRINK_ALL_UNDECLARED_GLOBALS && (undeclared_global_binding = undeclared_globals_nodesMap.get(node))){
