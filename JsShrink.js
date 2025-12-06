@@ -3,6 +3,7 @@
 
 
 
+
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -4127,6 +4128,18 @@ function Shrink(src, options) {
 					let propertySrc = source(node.parent.key)
 					if (propertySrc !== node._v) {
 						update(`${propertySrc}:${node._v}`, node)
+					}
+				}
+				else if (node.parent.type === "ImportSpecifier" && node.parent.local === node && node.parent.imported?.start === node.start
+					|| node.parent.type === "ExportSpecifier" && node.parent.local === node && node.parent.exported?.start === node.start
+				) {
+					if (node.name !== node._v) {
+						if (node.parent.type === "ImportSpecifier") {
+							update(`${node.name} as ${node._v}`, node)
+						}
+						else {
+							update(`${node._v} as ${node.name}`, node)
+						}
 					}
 				}
 				else{
