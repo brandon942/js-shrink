@@ -376,6 +376,7 @@ function registerScopeBindings (node) {
   }
   else if (node.type === 'VariableDeclaration') {
 	let isVar = node.kind === 'var'
+	let isExport = node.parent.type === "ExportNamedDeclaration" && node.parent.declaration === node && node.parent
     var scopeNode = getNearestScopeNode(node, !isVar)
     var scope = createScope(scopeNode)
     node.declarations.forEach(function (decl) {
@@ -387,12 +388,14 @@ function registerScopeBindings (node) {
 				allBindings.push(binding)
 				binding.hasRefsInWith = withStack[withStack.length-1]
 				scope.define(binding)
+				if (isExport) binding.isExportedDeclaration = isExport
 			}
 		}
       })
     })
   }
   else if (node.type === 'ClassDeclaration') {
+	let isExport = node.parent.type === "ExportNamedDeclaration" && node.parent.declaration === node && node.parent
     var scopeNode = getNearestScopeNode(node, true)
     var scope = createScope(scopeNode)
     if (node.id && node.id.type === 'Identifier') {
@@ -402,10 +405,12 @@ function registerScopeBindings (node) {
 			allBindings.push(binding)
 			binding.hasRefsInWith = withStack[withStack.length-1]
 			scope.define(binding)
+			if (isExport) binding.isExportedDeclaration = isExport
 		}
     }
   }
   else if (node.type === 'FunctionDeclaration') {
+	let isExport = node.parent.type === "ExportNamedDeclaration" && node.parent.declaration === node && node.parent
 	let id = node.id
 	let validId = id && id.type === 'Identifier'
 	let isSpecialValue = validId && isIdentifierASpecialValue(id)
@@ -426,6 +431,7 @@ function registerScopeBindings (node) {
 			allBindings.push(binding)
 			binding.hasRefsInWith = withStack[withStack.length-1]
 			scope.define(binding)
+			if (isExport) binding.isExportedDeclaration = isExport
 		}
 	}
   }
