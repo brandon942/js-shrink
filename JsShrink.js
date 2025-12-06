@@ -185,6 +185,18 @@ function obtainNewVariableIdentifiers(ast_node, otherIdentifiersInThisScope, cus
 				}
 				return true
 			}) 
+			.filter(x => {
+				let b = x[1]
+				if (b.definition?.parent.type === "ImportSpecifier" && b.references.size < 5 && b.definition.parent.local.start === b.definition.parent.imported.start
+					|| b.references.size < 5 && b.references.some(ref => ref.parent.type === "ExportSpecifier" && ref.parent.local.start === ref.parent.exported.start)
+					|| b.isExportedDeclaration
+				) {
+					unsafeNames ??= new Set
+					unsafeNames.add(x[0])
+					return false
+				}
+				return true
+			}) 
 			.map(x=>[null, x[1].references.size, x[1].references, 100, x[1].name, "_v"])
 		var allItems = variableItems
 		if(otherIdentifiersInThisScope){
@@ -319,6 +331,12 @@ function findAllLiterals(ast_node, comments, toIncludePropertyKeys=true, minProp
 	var numbersSeen = new Map
 	walk(ast_node, node=>{
 		if (excludeNodes?.size && excludeNodes.has(node)) {
+			return "jump"
+		}
+		var parentType = node.parent?.type
+		if (parentType && (parentType === "ImportDeclaration" || parentType === "ExportNamedDeclaration"
+			|| parentType === "ImportSpecifier" || parentType === "ExportSpecifier"
+		)) {
 			return "jump"
 		}
 		
@@ -1649,6 +1667,23 @@ function getUseStrictExpressionStatement(functionOrProgramNode) {
 		}
 	}
 }
+function getAst(src, opt={isModule:false, comments:null}) {
+	while (true) {
+		try {
+			return acorn.parse(src, {
+				ecmaVersion: "latest",
+				onComment: opt.comments,
+				sourceType: opt.isModule? "module" : "script"
+			})
+		} catch (error) {
+			if (!opt.isModule && error.message?.startsWith(`'import' and 'export'`)) {
+				opt.isModule = true
+				continue
+			}
+			throw error
+		}
+	}
+}
 function forceArrowFunctions(ast, src, ms, comments) {
 	function usesPrivateFunctionName(n) {
 		if (n.id) {
@@ -1781,6 +1816,7 @@ function forceArrowFunctions(ast, src, ms, comments) {
  * @property {any} [toAllowInliningOutsideOfTheClass=true]
  * @property {any} [withSourceMap=false]
  * @property {any} [rootIsStrictMode=false]
+ * @property {any} [isModule=false]
  * @property {{inlinedProps:Set<string>, removedUnusedProps:Set<string>}} [infoObject]
  * @property {SourceMap?} [map] - a prior source map object; this key will hold the new source map object if withSourceMap is truthy
 */
@@ -1796,7 +1832,8 @@ function inlineClassObjectProperties(src, options) {
 	const inlineLiteralValues_maxNumberOfTimes = Math.max(1, Number(options?.["inlineConstantsMaxNumberOfTimes"]) || 3)
 	const infoObject = options && "infoObject" in options? options.infoObject : null
 	const withSourceMap = options && "withSourceMap" in options? options.withSourceMap : false
-	const rootIsStrictMode = options && "rootIsStrictMode" in options? options.rootIsStrictMode : false
+	const isModule = options && "isModule" in options? options.isModule : false
+	let  rootIsStrictMode = isModule || (options && "rootIsStrictMode" in options? options.rootIsStrictMode : false)
 	let inputMap = options?.map
 	
 	function _inline() {
@@ -1804,11 +1841,10 @@ function inlineClassObjectProperties(src, options) {
 		
 		/** @type {acorn.Comment[]} */
 		var comments = []
-		var ast = acorn.parse(src, {
-			ecmaVersion: "latest",
-			onComment: comments,
-			// sourceType: "module",
-		})
+		var opt = {isModule, comments}
+		var ast = getAst(src, opt)
+		if (options) options.isModule = opt.isModule
+		rootIsStrictMode ||= opt.isModule
 		scan.crawl(ast, {rootIsStrictMode})
 		
 		
@@ -2263,6 +2299,11 @@ function inlineClassObjectProperties(src, options) {
 			if (binding1 || binding2) {
 				for (const binding of [binding1, binding2, ...getOtherAssignedBindings(binding2)]) {
 					if (binding) {
+						let isExported = binding.isExportedDeclaration || binding.references.some(ref => ref.parent.type === "ExportSpecifier" || ref.parent.type === "ExportNamedDeclaration")
+						if (isExported) {
+							_allProps.clear()
+							return 
+						}
 						if (!cObj._name) cObj._name = binding.name 
 						for (const ref of binding.references) {
 							let isRefOutsideOfTheClass = ref.start < cObj.start || ref.start >= cObj.end
@@ -3140,8 +3181,9 @@ function inlineClassObjectProperties(src, options) {
 			findAllObjectProperties(cObj)
 			findSafeClassBindings(cObj)
 			_allProps.forEach((p, n) => (p.kind == "constructor" || p.kind == "get" || p.kind == "set") && _allProps.delete(n))
-			if(!_allProps.size) continue 
-			classObjects.push(cObj)
+			if(_allProps.size){
+				classObjects.push(cObj)
+			}
 			_offset += 3
 		}
 		
@@ -3264,6 +3306,7 @@ function inlineClassObjectProperties(src, options) {
  * @property {SourceMapOptions?} [sourceMap] - source map options if a source map is to be generated
  * @property {any} [debug=false] - prints some debug information if truthy
  * @property {any} [debugInfo] - will hold an info object about the result if debug is truthy
+ * @property {any} [isModule=false] - for es module scripts
  * @property {any} [rootIsStrictMode=false] - whether the script is in strict mode from the start
  * @property {any} [findBestQuoteChar=false] - will try to find the best quote character for each string - not recommended.
  * @property {string} [declarationsPlaceholder="__JSSHRINK_DECLARATIONS_HERE__"] - custom comment marker used to insert the declarations at a specific location (default: __JSSHRINK_DECLARATIONS_HERE__)
@@ -3307,6 +3350,7 @@ function Shrink(src, options) {
 	const _TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED = (options && "classObjects" in options? options.classObjects : TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED)
 	const IS_STRICT_MODE = "rootIsStrictMode" in options? options.rootIsStrictMode : false
 	const _DEBUG = options && "debug" in options? options.debug : DEBUG
+	let IS_MODULE = "isModule" in options? options.isModule : false
 	// other options
 	const _DECLARATIONS_MARKER = options && "declarationsPlaceholder" in options && typeof options.declarationsPlaceholder == "string"? options.declarationsPlaceholder : DECLARATIONS_HERE_MARKER
 	const _DECLARATIONS_MARKER_CONST = options && "declarationsPlaceholderConst" in options && typeof options.declarationsPlaceholderConst == "string"? options.declarationsPlaceholderConst : DECLARATIONS_HERE_MARKER_CONST
@@ -3358,7 +3402,8 @@ function Shrink(src, options) {
 		let info = {}
 		let options_ = {
 			variableNamesChangeable: true,
-			rootIsStrictMode: IS_STRICT_MODE,
+			isModule: IS_MODULE,
+			rootIsStrictMode: IS_STRICT_MODE || IS_MODULE,
 			infoObject: info,
 			withSourceMap: _TO_GENERATE_SOURCEMAP,
 			classesNeedCommentMarker: _classObjects_classesNeedCommentMarker,
@@ -3369,6 +3414,7 @@ function Shrink(src, options) {
 		let src2 = inlineClassObjectProperties(src, options_)
 		if (src2) {
 			src = src2
+			IS_MODULE = options_.isModule
 			numInlinedClassPrperties += info.numInlinedProps
 			if(info.inlinedProps instanceof Array) allInlinedClassPrperties = allInlinedClassPrperties.concat(info.inlinedProps)
 			numInlinedItems += numInlinedClassPrperties
@@ -3393,9 +3439,9 @@ function Shrink(src, options) {
 				}, getAllThisInThisObject)
 				
 			}
-			var ast = acorn.parse(src, {
-				ecmaVersion: "latest",
-			})
+			var opt = {isModule: IS_MODULE}
+			var ast = getAst(src, opt)
+			IS_MODULE = opt.isModule
 			getAllThisInThisObject(ast)
 			if(!allThis.length) return 
 			var changes = 0
@@ -3435,12 +3481,10 @@ function Shrink(src, options) {
 	// Shrinking Literals ----------------------------------------------------------------------------------------------------------------------------------------------------------
 	/** @type {acorn.Comment[]} */
 	var comments = []
-	var ast = acorn.parse(src, {
-		ecmaVersion: "latest",
-		onComment: comments,
-		// sourceType: "module",
-	})
-	scan.crawl(ast, {isStrictMode:IS_STRICT_MODE}) 
+	var opt = {isModule: IS_MODULE, comments}
+	var ast = getAst(src, opt)
+	IS_MODULE = opt.isModule
+	scan.crawl(ast, {isStrictMode:IS_STRICT_MODE || IS_MODULE})
 	var rootScope = scan.scope(ast)
 	
 	
