@@ -4109,7 +4109,7 @@ function Shrink(src, options) {
 				update(id, node)
 			}
 			// Fix: "object.[A]" => "object[A]"
-			else if(node.type == "MemberExpression" && node.computed == false && !node.optional && stringLiterals_nodesMap.has(node.property)){
+			else if(node.type == "MemberExpression" && node.computed == false && !node.optional && stringLiterals_nodesMap.has(node.property) && edit.ctx.source(node.property)[0] === "["){
 				// remove "."
 				let [c, i] = nextTokenInJs1(src, node.object.end, node.property.start, ')')??""
 				if (c === ".") {
