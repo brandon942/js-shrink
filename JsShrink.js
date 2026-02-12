@@ -1,9 +1,6 @@
 
 
 
-
-
-
 const DEBUG = 0
 const CONST_DECLARATION_QUOTE_CHARACTER = "`"
 const TO_SHRINK_ALL_STRING_LITERALS = 1
@@ -1279,8 +1276,8 @@ function inlineFunctionBody(functionNode, functionInfo, refCallExpressionNode, c
 		for (const [, b] of funcScopeBindings) {
 			let name = b.definition._rn || b.name
 			let callArg = paramsMap.get(b.name)
-			if(callArg){
-				let firstArgPart = callArg[0] || callArg[1]
+			let firstArgPart = callArg && (callArg[0] || callArg[1])
+			if(firstArgPart){
 				ctx.prepend(name + "=", firstArgPart)
 				lets.push(callArg)
 			}
@@ -1692,6 +1689,61 @@ function forceArrowFunctions(ast, src, ms, comments) {
 			return b && b.references.size > 1
 		}
 	}
+	function isCalledWithNew(n) {
+		function isValidAssignment(node, safe=true) {
+			var left, right, isDeclaration
+			if(node.type === "AssignmentExpression"){ 
+				let operator = node.operator
+				if (operator === "=") {
+					if (safe && isResultAccessible(node.parent)) {
+						return false
+					}
+					
+					left = node.left
+					right = node.right
+				}
+				else return
+			}
+			else if (node.type === 'VariableDeclarator' && node.init) {
+				left = node.id
+				right = node.init
+				isDeclaration = true
+			}
+			else return
+			return [left, right, isDeclaration]
+			
+			function isResultAccessible(node, canBeVariableDeclarator=true) {
+				if (canBeVariableDeclarator && node.type == "VariableDeclarator") return false
+				if (node.type == "LogicalExpression" || node.type == "BinaryExpression") {
+					return isResultAccessible(node.parent, false)
+				}
+				var isVoided = node.type == "ExpressionStatement"
+						|| node.type == "SequenceExpression" && (
+							node.expressions[node.expressions.length-1] !== node || node.parent.type == "ExpressionStatement"
+						)
+				return !isVoided
+			}
+		}
+		let bindings = []
+		if (n.id) {
+			let b = scan.binding(n.id)
+			if(b) bindings.push(b)
+		}
+		var [left] = isValidAssignment(n.parent, 1)||""
+		if (left) {
+			let b = scan.binding(left)
+			if(b) bindings.push(b)
+		}
+		for (const b of bindings) {
+			for (const ref of b.references) {
+				let parent = ref.parent
+				if (parent.type === "NewExpression" && parent.callee === ref) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	var numConvertedFunctions = 0
 	var hoistingPointsVar = new Map
 	var hoistingPointsLet = new Map
@@ -1702,6 +1754,7 @@ function forceArrowFunctions(ast, src, ms, comments) {
 		if (n.uses_arguments || n.uses_this) return
 		if (n.generator) return
 		if (n.parent.type == "Property" && (n.parent.kind != "init" || n.parent.method) || n.parent.type == "MethodDefinition") return
+		 if (isCalledWithNew(n)) return
 		if (isFunctionExpression) {
 			if (usesPrivateFunctionName(n)) return
 			if (n.parent.type === "CallExpression" && n.parent.callee === n) {
@@ -3389,7 +3442,7 @@ function Shrink(src, options) {
 	// class object ----------------------------------------------------------------------------------------------------------------------------------------------------------
 	var numInlinedClassPrperties = options && "inlinedClassPropsPre" in options && Number.isInteger(options.inlinedClassPropsPre)? options.inlinedClassPropsPre : 0
 	var allInlinedClassPrperties = options && "inlinedClassPropsAllPre" in options && options.inlinedClassPropsAllPre instanceof Array? options.inlinedClassPropsAllPre : []
-	var removedUnusedClassProperties = []
+	var removedUnusedClassProperties = options && "removedUnusedPropsPre" in options && options.removedUnusedPropsPre instanceof Array? options.removedUnusedPropsPre : []
 	if (_TO_INLINE_CLASS_OBJECT_PROPERTIES_AND_REMOVE_UNUSED) {
 		let _classObjects_classesNeedCommentMarker = false
 		let _classObjects_allowInliningOutsideOfTheClass = true
@@ -3417,9 +3470,9 @@ function Shrink(src, options) {
 			src = src2
 			IS_MODULE = options_.isModule
 			numInlinedClassPrperties += info.numInlinedProps
-			if(info.inlinedProps instanceof Array) allInlinedClassPrperties = allInlinedClassPrperties.concat(info.inlinedProps)
 			numInlinedItems += numInlinedClassPrperties
-			removedUnusedClassProperties = info.removedUnusedProps
+			if(info.inlinedProps instanceof Array) allInlinedClassPrperties = allInlinedClassPrperties.concat(info.inlinedProps)
+			if(info.removedUnusedProps instanceof Array) removedUnusedClassProperties = removedUnusedClassProperties.concat(info.removedUnusedProps)
 			if (_TO_GENERATE_SOURCEMAP) inputMap = options_.map
 		}
 	}
@@ -3459,9 +3512,9 @@ function Shrink(src, options) {
 				if(root.body && !(root.body instanceof Array)) root = root.body
 				if(!(root.body && root.body instanceof Array && root.body.length)) throw "root body expected"
 				var id = gimmeSomethingUnique()
-				if(DEBUG) id = "this_"+changes+"_"
+				if(_DEBUG) id = "this_"+changes+"_"
 				t[1].forEach(n => ctx.update(id, n))
-				ctx.prepend("var "+id+"=this;"+(DEBUG?"\n":""), root.body[0])
+				ctx.prepend("var "+id+"=this;"+(_DEBUG?"\n":""), root.body[0])
 				++changes
 				numThisReplaced += t[1].length
 				estimatedSumGain += gain
